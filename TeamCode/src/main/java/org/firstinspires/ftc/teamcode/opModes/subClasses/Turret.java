@@ -1,309 +1,85 @@
 package org.firstinspires.ftc.teamcode.opModes.subClasses;
 
-import com.bylazar.configurables.annotations.Configurable;
 import com.qualcomm.robotcore.hardware.HardwareMap;
 import com.qualcomm.robotcore.hardware.Servo;
+import com.qualcomm.robotcore.util.Range;
 
-import com.pedropathing.math.Pose;
-import com.pedropathing.api.PoseFactory;
-
-import org.firstinspires.ftc.teamcode.opModes.subClasses.PoseStorage;
-
-@Configurable
 public class Turret {
+    public Servo turretServo;
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Hardware
-    // ─────────────────────────────────────────────────────────────────────────
+    // Calibrate these: the raw servo positions that physically put the
+    // turret at the right side and the left side of the robot.
+    private double rightServoPos = 0.0;
+    private double leftServoPos  = 1.0;
 
-    private Servo turretServo;
-
-    public static String TURRET_SERVO_NAME = "turretServo";
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Mechanical Servo Calibration
-    // ─────────────────────────────────────────────────────────────────────────
-
-    public static double LEFT_SERVO_LIMIT = 0.0;
-    public static double RIGHT_SERVO_LIMIT = 1.0;
-
-    public static boolean SERVO_REVERSED = false;
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Aim Tuning
-    //
-    // AIM_OFFSET is still a servo-position trim.
-    // Do not treat AIM_OFFSET as degrees or radians.
-    // ─────────────────────────────────────────────────────────────────────────
-
-    public static double AIM_OFFSET = 0.0;
-    public static double AIM_OFFSET_BLUE = 0.0; //-0.08
-    public static double AIM_OFFSET_RED = 0.0; //0.04
-    public static double AIM_GAIN = 1.0;
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Turret Angle Limits
-    // ─────────────────────────────────────────────────────────────────────────
-
-    private static final double MIN_TURRET_ANGLE = -Math.PI / 2.0;
-    private static final double MAX_TURRET_ANGLE = Math.PI / 2.0;
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Target
-    // ─────────────────────────────────────────────────────────────────────────
-
-    public static Pose targetPose = new Pose(0, 0, 0);
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Velocity Compensation
-    // ─────────────────────────────────────────────────────────────────────────
-
-    public static boolean velocityCompensationActive = true;
-    public static double VELOCITY_LEAD_GAIN = 0.01;
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Limelight Assist
-    //
-    // Default is OFF.
-    //
-    // Enable both:
-    // Turret.USE_LIMELIGHT_ASSIST = true;
-    // LimelightAssist.LIMELIGHT_ENABLED = true;
-    //
-    // If correction moves the wrong way:
-    // LimelightAssist.CORRECTION_DIRECTION = -1.0;
-    // ─────────────────────────────────────────────────────────────────────────
-
-    public static boolean USE_LIMELIGHT_ASSIST = false;
-
-    public static boolean UPDATE_LIMELIGHT_INSIDE_TURRET = true;
-    public static boolean REQUIRE_LIMELIGHT_TARGET = true;
-    public static boolean DISABLE_LIMELIGHT_WHEN_LOCKED = false;
-
-    public static double LIMELIGHT_CORRECTION_GAIN = 1.0;
-    public static double MAX_LIMELIGHT_CORRECTION_RAD = Math.toRadians(5.0);
-
-    public static double VISION_SMOOTHING_ALPHA = 0.35;
-    public static double MAX_VISION_STEP_RAD = Math.toRadians(1.5);
-
-    public static boolean limelightAssistActive = false;
-    public static boolean limelightTargetVisible = false;
-    public static boolean limelightLocked = false;
-
-    public static double lastLimelightTx = 0.0;
-    public static double lastRawLimelightCorrectionDeg = 0.0;
-    public static double lastAppliedLimelightCorrectionDeg = 0.0;
-
-    private double previousVisionCorrectionRad = 0.0;
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Diagnostics
-    // ─────────────────────────────────────────────────────────────────────────
-
-    public static double lastRobotX = 0.0;
-    public static double lastRobotY = 0.0;
-    public static double lastRobotHeadingDeg = 0.0;
-
-    public static double lastTargetX = 0.0;
-    public static double lastTargetY = 0.0;
-
-    public static double lastFieldTargetAngleDeg = 0.0;
-    public static double lastRelativeAngleDeg = 0.0;
-    public static double lastVelocityLeadX = 0.0;
-    public static double lastVelocityLeadY = 0.0;
-    public static double lastFinalAngleDeg = 0.0;
-    public static double lastServoPosition = 0.0;
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Init
-    // ─────────────────────────────────────────────────────────────────────────
+    private boolean swapped = false;   // true flips: 0 = left, 1 = right
+    private double target = 0.5;       // 0 = right, 0.5 = back, 1 = left
 
     public void init(HardwareMap hardwareMap) {
-        turretServo = hardwareMap.get(Servo.class, TURRET_SERVO_NAME);
-        turretServo.setDirection(Servo.Direction.REVERSE);
-
-        setForward();
+        turretServo = hardwareMap.get(Servo.class, "turretServo");
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Target Control
-    // ─────────────────────────────────────────────────────────────────────────
-
-    public void setTargetPose(Pose pose) {
-        if (pose != null) {
-            targetPose = pose;
-        }
+    /** Set target as 0..1 (0 = right, 0.5 = back, 1 = left). */
+    public void setTarget(double t) {
+        target = Range.clip(t, 0.0, 1.0);
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Aim Turret
-    //
-    // Process:
-    // 1. Calculate field angle from robot to goal
-    // 2. Add simple velocity lead if enabled
-    // 3. Convert field angle to robot-relative angle
-    // 4. Normalise to -π to +π
-    // 5. Apply AIM_GAIN
-    // 6. Add optional Limelight angular correction
-    // 7. Clamp to -90° to +90°
-    // 8. Convert angle to 0.0 to 1.0 normalised position
-    // 9. Apply servo reversal if needed
-    // 10. Map to calibrated servo limits
-    // 11. Apply AIM_OFFSET as servo-position trim
-    // 12. Clamp to calibrated servo limits
-    // ─────────────────────────────────────────────────────────────────────────
+    /** Set target as degrees: 0 = right, 90 = back, 180 = left. */
+    public void setTargetDegrees(double deg) {
+        setTarget(deg / 180.0);
+    }
 
-    public void aimTurret(Pose robotPose, double vx, double vy) {
+    public void nudge(double delta) {
+        setTarget(target + delta);
+    }
 
-        if (robotPose == null || turretServo == null) {
-            return;
-        }
+    public void setSwapped(boolean swapped) { this.swapped = swapped; }
+    public void toggleSwapped()             { swapped = !swapped; }
+    public boolean isSwapped()              { return swapped; }
 
-        double dx = targetPose.x() - robotPose.x();
-        double dy = targetPose.y() - robotPose.y();
+    public double getTarget()        { return target; }
+    public double getTargetDegrees() { return target * 180.0; }
 
-        double leadX = velocityCompensationActive ? vx * VELOCITY_LEAD_GAIN : 0.0;
-        double leadY = velocityCompensationActive ? vy * VELOCITY_LEAD_GAIN : 0.0;
+    /** Call every loop. */
+    public void update() {
+        double t = swapped ? 1.0 - target : target;
+        double pos = rightServoPos + t * (leftServoPos - rightServoPos);
+        turretServo.setPosition(Range.clip(pos, 0.0, 1.0));
+    }
 
-        double targetAngle = Math.atan2(dy + leadY, dx + leadX);
+    /**
+     * Aim the turret at a field point.
+     * Assumes standard math convention: heading and angles in radians,
+     * counter-clockwise positive, 0 = facing +X.
+     *
+     * @param robotX, robotY   robot position on the field
+     * @param robotHeading     robot heading (radians, CCW from +X)
+     * @param targetX, targetY field point to aim at
+     */
+    public void aimAt(double robotX, double robotY, double robotHeading,
+                      double targetX, double targetY) {
+        // Angle from robot to target in field frame
+        double fieldAngle = Math.atan2(targetY - robotY, targetX - robotX);
 
-        double relativeAngle = targetAngle - robotPose.heading();
+        // Angle relative to robot: 0 = forward, +90° = left, -90° = right, 180° = back
+        double rel = Math.toDegrees(fieldAngle - robotHeading);
 
-        relativeAngle = normaliseRadians(relativeAngle);
+        // Turret frame: 0° = right (rel -90), 90° = back (rel 180), 180° = left (rel +90)
+        double turretDeg = (-rel - 90.0) % 360.0;
+        if (turretDeg < 0) turretDeg += 360.0;   // wrap into 0..360
 
-        relativeAngle *= AIM_GAIN;
-
-        relativeAngle = clamp(
-                relativeAngle,
-                MIN_TURRET_ANGLE,
-                MAX_TURRET_ANGLE
-        );
-
-        double normalisedPosition = angleToNormalisedPosition(relativeAngle);
-
-        if (SERVO_REVERSED) {
-            normalisedPosition = 1.0 - normalisedPosition;
+        // 180..360 is the front half, which the turret can't reach.
+        // Clamp to whichever side is closer (270 is straight forward).
+        if (turretDeg > 180.0) {
+            turretDeg = (turretDeg >= 270.0) ? 0.0 : 180.0;
         }
 
-        double servoPosition = mapNormalisedToServoLimits(normalisedPosition);
-
-        /*if (PoseStorage.lastAlliance == PoseStorage.Alliance.BLUE) {
-            AIM_OFFSET = AIM_OFFSET_BLUE;
-        }
-
-        if (PoseStorage.lastAlliance == PoseStorage.Alliance.RED) {
-            AIM_OFFSET = AIM_OFFSET_RED;
-        } */
-
-        servoPosition += AIM_OFFSET;
-
-        servoPosition = clampToServoLimits(servoPosition);
-
-        turretServo.setPosition(servoPosition);
-
-        lastRobotX = robotPose.x();
-        lastRobotY = robotPose.y();
-        lastRobotHeadingDeg = Math.toDegrees(robotPose.heading());
-
-        lastTargetX = targetPose.x();
-        lastTargetY = targetPose.y();
-
-        lastVelocityLeadX = leadX;
-        lastVelocityLeadY = leadY;
-
-        lastFieldTargetAngleDeg = Math.toDegrees(targetAngle);
-        lastRelativeAngleDeg = Math.toDegrees(relativeAngle);
-        lastFinalAngleDeg = Math.toDegrees(relativeAngle);
-        lastServoPosition = servoPosition;
+        setTargetDegrees(turretDeg);
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Forward Position
-    // ─────────────────────────────────────────────────────────────────────────
-
-    public void setForward() {
-        if (turretServo == null) {
-            return;
-        }
-        turretServo.setPosition(getCalibratedCentrePosition());
-        lastServoPosition = getCalibratedCentrePosition();
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Calibration Helpers
-    // ─────────────────────────────────────────────────────────────────────────
-
-    public static double getCalibratedCentrePosition() {
-        return (LEFT_SERVO_LIMIT + RIGHT_SERVO_LIMIT) / 2.0;
-    }
-
-    private double angleToNormalisedPosition(double angleRadians) {
-        return (angleRadians - MIN_TURRET_ANGLE) /
-                (MAX_TURRET_ANGLE - MIN_TURRET_ANGLE);
-    }
-
-    private double mapNormalisedToServoLimits(double normalisedPosition) {
-        double minServo = Math.min(LEFT_SERVO_LIMIT, RIGHT_SERVO_LIMIT);
-        double maxServo = Math.max(LEFT_SERVO_LIMIT, RIGHT_SERVO_LIMIT);
-
-        return minServo + normalisedPosition * (maxServo - minServo);
-    }
-
-    private double clampToServoLimits(double value) {
-        double minServo = Math.min(LEFT_SERVO_LIMIT, RIGHT_SERVO_LIMIT);
-        double maxServo = Math.max(LEFT_SERVO_LIMIT, RIGHT_SERVO_LIMIT);
-
-        return clamp(value, minServo, maxServo);
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Angle Utility
-    // ─────────────────────────────────────────────────────────────────────────
-
-    private double normaliseRadians(double angleRadians) {
-        while (angleRadians > Math.PI) {
-            angleRadians -= 2.0 * Math.PI;
-        }
-
-        while (angleRadians < -Math.PI) {
-            angleRadians += 2.0 * Math.PI;
-        }
-
-        return angleRadians;
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // General Utility
-    // ─────────────────────────────────────────────────────────────────────────
-
-    private double clamp(double value, double min, double max) {
-        return Math.max(min, Math.min(max, value));
+    /** Use to calibrate endpoints. */
+    public void setRange(double rightPos, double leftPos) {
+        rightServoPos = rightPos;
+        leftServoPos = leftPos;
     }
 }
-
-
-/*package org.firstinspires.ftc.teamcode.opModes.subClasses;
-
-import com.bylazar.configurables.annotations.Configurable;
-import com.pedropathing.follower.Follower;
-import com.qualcomm.robotcore.hardware.DcMotor;
-import com.qualcomm.robotcore.hardware.DcMotorEx;
-import com.qualcomm.robotcore.hardware.DcMotorSimple;
-import com.qualcomm.robotcore.hardware.HardwareMap;
-import com.qualcomm.robotcore.hardware.Servo;
-
-@Configurable
-public class Turret {
-
-    public Servo TurretServo;
-
-    public static double turretPos;
-
-    public void init(HardwareMap hardwareMap) {
-        TurretServo = hardwareMap.get(Servo.class, "turretServo");
-    }
-
-    public void aimTurret(double position) {
-        TurretServo.setPosition(position);
-    }
-} */

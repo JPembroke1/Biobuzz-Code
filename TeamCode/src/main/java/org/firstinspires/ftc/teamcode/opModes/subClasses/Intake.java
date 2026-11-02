@@ -4,8 +4,11 @@ import com.bylazar.configurables.annotations.Configurable;
 import com.qualcomm.robotcore.hardware.DcMotor;
 import com.qualcomm.robotcore.hardware.DcMotorSimple;
 import com.qualcomm.robotcore.hardware.DigitalChannel;
+import com.qualcomm.robotcore.hardware.DigitalChannelImpl;
 import com.qualcomm.robotcore.hardware.HardwareMap;
+import com.qualcomm.robotcore.hardware.PwmControl;
 import com.qualcomm.robotcore.hardware.ServoImplEx;
+import com.qualcomm.robotcore.hardware.PwmControl;
 
 @Configurable
 public class Intake {
@@ -41,6 +44,22 @@ public class Intake {
 
         IntakeMotorRight.setDirection(DcMotorSimple.Direction.REVERSE);
         IntakeMotorLeft.setDirection(DcMotorSimple.Direction.REVERSE);
+
+        ballSensor = hardwareMap.get(DigitalChannel.class, "ballSensor");
+        ballSensor.setMode(DigitalChannel.Mode.INPUT);
+
+        //led = hardwareMap.get(ServoImplEx.class, "led");
+        //led.setPwmRange(new PwmControl.PwmRange(500, 2500));
+        //led.setPwmEnable();
+
+        rawSensorState = ballSensor.getState();
+        sensorTriggered = getSensorTriggeredFromRaw(rawSensorState);
+
+        ballConfirmed = false;
+        ballDetectedTimeSeconds = 0.0;
+        ballDetectionStartTime = -1;
+
+        lastLedPosition = red;
     }
 
     public void intake(double leftPower, double rightPower) {
@@ -133,7 +152,7 @@ public class Intake {
     public void setLedPosition(double position) {
         double clippedPosition = clamp(position, 0.0, 1.0);
 
-        led.setPosition(clippedPosition);
+        //led.setPosition(clippedPosition);
         lastLedPosition = clippedPosition;
     }
 

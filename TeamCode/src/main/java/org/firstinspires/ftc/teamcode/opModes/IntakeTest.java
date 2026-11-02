@@ -1,5 +1,7 @@
 package org.firstinspires.ftc.teamcode.opModes;
 
+import android.hardware.HardwareBuffer;
+
 import com.bylazar.configurables.annotations.Configurable;
 import com.pedropathing.api.PoseFactory;
 import com.pedropathing.drivetrain.DrivePowers;
@@ -8,6 +10,7 @@ import com.pedropathing.math.Pose;
 import com.qualcomm.hardware.lynx.LynxModule;
 import com.qualcomm.robotcore.eventloop.opmode.OpMode;
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
+import com.qualcomm.robotcore.hardware.HardwareMap;
 import com.qualcomm.robotcore.hardware.Servo;
 
 import org.firstinspires.ftc.teamcode.opModes.subClasses.Brakes;
@@ -15,8 +18,10 @@ import org.firstinspires.ftc.teamcode.opModes.subClasses.Intake;
 import org.firstinspires.ftc.teamcode.opModes.subClasses.Outtake;
 import org.firstinspires.ftc.teamcode.opModes.subClasses.PoseStorage;
 import org.firstinspires.ftc.teamcode.opModes.subClasses.RobotConstants;
+import org.firstinspires.ftc.teamcode.opModes.subClasses.RobotHardware;
 import org.firstinspires.ftc.teamcode.opModes.subClasses.Turret;
 import org.firstinspires.ftc.teamcode.pedro.Constants;
+import org.opencv.core.Mat;
 
 import java.util.List;
 
@@ -28,7 +33,7 @@ public class IntakeTest extends OpMode {
 
     private Intake intake;
     private Outtake outtake;
-
+    private RobotHardware robotHardware;
     private Brakes brakes;
 
     private Turret turret;
@@ -42,18 +47,18 @@ public class IntakeTest extends OpMode {
 
     private String allianceLabel = "UNKNOWN";
 
-    public static double BLUE_GOAL_X = 6.0;
-    public static double BLUE_GOAL_Y = 138.0;
+    public static double BLUE_GOAL_X = 84.0;
+    public static double BLUE_GOAL_Y = 53.0;
 
     public static double RED_GOAL_X = 138.0;
     public static double RED_GOAL_Y = 138.0;
 
-    public static double TELEOP_RESET_X = 24.0;
-    public static double TELEOP_RESET_Y = 138.0;
+    public static double TELEOP_RESET_X = 0;
+    public static double TELEOP_RESET_Y = 0;
     public static double TELEOP_RESET_HEADING_DEG = 145.0;
 
-    public static double TELEOP_GOAL_X = 6.0;
-    public static double TELEOP_GOAL_Y = 138.0;
+    public static double TELEOP_GOAL_X = 0;
+    public static double TELEOP_GOAL_Y = 0;
 
     public static double BLUE_RESET_X = 24.0;
     public static double BLUE_RESET_Y = 138.0;
@@ -62,6 +67,12 @@ public class IntakeTest extends OpMode {
     public static double RED_RESET_X = 120.0;
     public static double RED_RESET_Y = 138.0;
     public static double RED_RESET_HEADING_DEG = 35.0;
+    public static double distanceCM = 0;
+
+    public static double HOOD_POSITION = 0.34;
+
+    public static double right_servo_limit = 0.1;
+    public static double left_servo_limit = 0.9;
 
     // Drive input signs. Pedro's convention is forward = -stickY,
     // strafe = -stickX (positive = left), turn = -stickX (positive = CCW).
@@ -70,7 +81,7 @@ public class IntakeTest extends OpMode {
     public static double STRAFE_SIGN = -1.0;
     public static double TURN_SIGN = -1.0;
     // Cubic shaping on strafe and turn gives finer control at low stick values.
-    public static boolean CUBIC_STRAFE_TURN = true;
+    public static boolean CUBIC_STRAFE_TURN = false;
 
     // Idle speed as a fraction of RobotConstants.OUTTAKE_TPS (0 = no idle spin).
     public static double IDLE_FRACTION = 0.5;
@@ -78,8 +89,11 @@ public class IntakeTest extends OpMode {
     // Press gamepad2 dpad up to turn off auto-aim and set the turret to this position.
     public static double TURRET_OVERRIDE_POSITION = 0.5;
 
+    //public Servo turretServo;
+
     private boolean previousG1DpadUp = false;
     private boolean previousG1DpadRight = false;
+    private boolean previousG1DpadLeft = false;
     private boolean previousLeftBumper = false;
 
     private boolean autoAimMode = true;
@@ -109,6 +123,8 @@ public class IntakeTest extends OpMode {
         brakes = new Brakes();
         brakes.init(hardwareMap);
 
+        robotHardware = new RobotHardware(hardwareMap);
+
         turret = new Turret();
         turret.init(hardwareMap);
 
@@ -116,15 +132,21 @@ public class IntakeTest extends OpMode {
         blockServo.setDirection(Servo.Direction.FORWARD);
         blockServo.setPosition(RobotConstants.blockClosePos);
 
-        turret.setForward();
+
+
+        //turret.setTarget(0);
 
         applyAllianceFromPoseStorage();
 
-        if (PoseStorage.currentPose != null) {
+        /*if (PoseStorage.currentPose != null) {
             follower.setPose(PoseStorage.currentPose);
         } else {
             follower.setPose(getTeleOpResetPose());
-        }
+        }*/
+
+        follower.setPose(new Pose(0, 0, 180));
+
+        //turretServo = hardwareMap.get(Servo.class, "turretServo");
     }
 
     @Override
@@ -146,9 +168,22 @@ public class IntakeTest extends OpMode {
 
         updateTurretAim(currentPose);
 
+        //turretServo.setPosition(0);
+
         handleTurretModeControls();
 
-        DetermineGoal(currentPose);
+        //DetermineGoal(currentPose);
+
+        handlePoseReset();
+
+        handleGoalPose(currentPose);
+
+        getDistanceCM(currentPose);
+
+        //robotHardware.linearHoodRegression(distanceCM);
+        robotHardware.updateHood(HOOD_POSITION);
+
+        turret.setRange(right_servo_limit, left_servo_limit);
     }
 
     private void handleControls() {
@@ -163,12 +198,12 @@ public class IntakeTest extends OpMode {
                     RobotConstants.FRONT_INTAKE_SPEED,
                     RobotConstants.BACK_INTAKE_SPEED
             );
-            blockServo.setPosition(RobotConstants.blockClosePos);
+            robotHardware.block();
             RobotConstants.timer = 0;
 
         } else if (gamepad1.right_trigger > 0.3) {
 
-            blockServo.setPosition(RobotConstants.blockOpenPos);
+            robotHardware.open();
             RobotConstants.timer += 0.1;
 
             if (RobotConstants.timer > RobotConstants.delayAmount) {
@@ -188,7 +223,7 @@ public class IntakeTest extends OpMode {
         } else {
 
             intake.stopIntake();
-            blockServo.setPosition(RobotConstants.blockClosePos);
+            robotHardware.block();
             RobotConstants.timer = 0;
         }
 
@@ -199,9 +234,6 @@ public class IntakeTest extends OpMode {
         // The shooter idles by default. Right bumper (intake) returns it to idle,
         // cross (or triangle for idle) switches modes. Cross is checked last so it
         // wins if pressed together with the intake button.
-        if (gamepad1.right_bumper) {
-            shooterActive = false;
-        }
 
         if (gamepad1.triangle) {
             shooterActive = false;
@@ -214,16 +246,15 @@ public class IntakeTest extends OpMode {
         // The target follows RobotConstants.OUTTAKE_TPS every loop, so Panels edits
         // take effect live in both modes.
         double shootTPS = RobotConstants.OUTTAKE_TPS;
-        double idleTPS = shootTPS * Math.max(0.0, IDLE_FRACTION);
 
-        outtake.setTargetTPS(shooterActive ? shootTPS : idleTPS);
+        outtake.setTargetTPS(shooterActive ? shootTPS : 0);
 
         // =====================================================
         // TURRET
         // =====================================================
 
         // gamepad2 dpad up: auto-aim OFF and turret to the override position.
-        if (gamepad2.dpadUpWasPressed()) {
+        /*if (gamepad2.dpadUpWasPressed()) {
             autoAimMode = false;
             RobotConstants.TURRET_POSITION = TURRET_OVERRIDE_POSITION;
         }
@@ -231,14 +262,13 @@ public class IntakeTest extends OpMode {
         // gamepad1 square: auto-aim back ON.
         if (gamepad1.squareWasPressed()) {
             autoAimMode = true;
-            updateTurretTargetFromTeleOpGoal();
-        }
+        } */
 
-        if (gamepad1.dpadRightWasPressed() && RobotConstants.TURRET_POSITION < 1) {
+        /*if (gamepad1.dpadRightWasPressed() && RobotConstants.TURRET_POSITION < 1) {
             RobotConstants.TURRET_POSITION += 0.05;
         } else if (gamepad1.dpadLeftWasPressed() && RobotConstants.TURRET_POSITION > 0) {
             RobotConstants.TURRET_POSITION -= 0.05;
-        }
+        } */
 
         // =====================================================
         // BRAKES
@@ -250,6 +280,10 @@ public class IntakeTest extends OpMode {
 
         if (gamepad1.dpad_down) {
             brakes.lowerBrakes();
+        }
+
+        if (gamepad2.dpadDownWasPressed()) {
+            CUBIC_STRAFE_TURN = !CUBIC_STRAFE_TURN;
         }
     }
 
@@ -352,15 +386,19 @@ public class IntakeTest extends OpMode {
             PoseStorage.setPose(resetPose);
 
             autoAimMode = true;
-            updateTurretTargetFromTeleOpGoal();
         }
 
         previousG1DpadRight = currentDpadRight;
     }
 
-    private void updateTurretTargetFromTeleOpGoal() {
-        turret.setTargetPose(getTeleOpGoalPose());
-    }
+    /*private void handleGoalReset() {
+        boolean currentDpadLeft = gamepad1.dpad_left;
+
+        if (currentDpadLeft && !previousG1DpadLeft) {
+            Pose goalPose = getTeleOpGoalPose();
+        }
+    }*/
+
 
     private Pose getTeleOpGoalPose() {
         return new Pose(TELEOP_GOAL_X, TELEOP_GOAL_Y, 0);
@@ -387,13 +425,12 @@ public class IntakeTest extends OpMode {
             autoAimMode = !autoAimMode;
 
             if (!autoAimMode) {
-                turret.setForward();
+                turret.setTarget(0);
             }
         }
 
         if (currentDpadUp && !previousG1DpadUp) {
             autoAimMode = true;
-            updateTurretTargetFromTeleOpGoal();
         }
 
         previousLeftBumper = currentLeftBumper;
@@ -402,21 +439,31 @@ public class IntakeTest extends OpMode {
 
     private void updateTurretAim(Pose currentPose) {
         if (autoAimMode) {
-            turret.aimTurret(
-                    currentPose,
-                    estimatedFieldVelocityX,
-                    estimatedFieldVelocityY
+            turret.aimAt(
+                    currentPose.x(),
+                    currentPose.y(),
+                    currentPose.heading(),
+                    TELEOP_GOAL_X,
+                    TELEOP_GOAL_Y
             );
         } else {
-            turret.setForward();
+            turret.setTarget(0);
         }
+        turret.update();
     }
 
-    private void DetermineGoal(Pose currentPose) {
+    /*private void DetermineGoal(Pose currentPose) {
         if (currentPose.x() > 72) {
-            TELEOP_GOAL_X = 100;
+            TELEOP_GOAL_X = 86.0;
         } else {
-            TELEOP_GOAL_X = 50;
+            TELEOP_GOAL_X = 34.0;
+        }
+    }*/
+
+    private void handleGoalPose(Pose currentPose) {
+        if (gamepad1.dpad_left) {
+            TELEOP_GOAL_X = currentPose.x();
+            TELEOP_GOAL_Y = currentPose.y();
         }
     }
 
@@ -441,6 +488,10 @@ public class IntakeTest extends OpMode {
                 TELEOP_RESET_Y,
                 Math.toRadians(TELEOP_RESET_HEADING_DEG)
         );
+    }
+
+    private void getDistanceCM(Pose currentPose) {
+        distanceCM = Math.sqrt(Math.pow((currentPose.x() - TELEOP_GOAL_X), 2) + Math.pow((currentPose.y() - TELEOP_GOAL_Y), 2));
     }
 
     private void applyAllianceFromPoseStorage() {

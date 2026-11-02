@@ -26,7 +26,7 @@ public class Outtake {
     // PF tuning values, using encoder ticks per second.
     // kF must be tuned at NOMINAL_VOLTAGE (see below).
     public static double kF = 0.00045;
-    public static double kP = 0.004;
+    public static double kP = 0.0015;
 
     // Maximum motor power
     public static double MAX_POWER = 1.0;
@@ -45,11 +45,11 @@ public class Outtake {
     private DcMotorEx slave;
     private VoltageSensor voltageSensor;
 
-    private double targetTPS = 0.0;
-    private double rawTPS = 0.0;
-    private double currentTPS = 0.0;   // filtered
-    private double errorTPS = 0.0;
-    private double commandedPower = 0.0;
+    public double targetTPS = 0.0;
+    public double rawTPS = 0.0;
+    public double currentTPS = 0.0;   // filtered
+    public double errorTPS = 0.0;
+    public double commandedPower = 0.0;
 
     private double filteredVoltage = 0.0;
     private double voltageScale = 1.0;
@@ -61,7 +61,7 @@ public class Outtake {
         slave = hardwareMap.get(DcMotorEx.class, SLAVE_MOTOR_NAME);
         voltageSensor = hardwareMap.voltageSensor.iterator().next();
 
-        master.setDirection(DcMotorSimple.Direction.REVERSE);
+        master.setDirection(DcMotorSimple.Direction.FORWARD);
         slave.setDirection(DcMotorSimple.Direction.FORWARD);
 
         master.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.FLOAT);
