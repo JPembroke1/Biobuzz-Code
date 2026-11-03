@@ -4,7 +4,6 @@ import static com.pedropathing.api.Paths.*;
 import static com.pedropathing.ivy.commands.Commands.*;
 
 import com.pedropathing.ivy.Command;
-import com.pedropathing.ivy.behaviors.*;
 
 import com.pedropathing.ivy.Scheduler;
 import static com.pedropathing.ivy.Scheduler.schedule;
@@ -17,7 +16,6 @@ import com.pedropathing.follower.Follower;
 import com.pedropathing.math.Pose;
 import com.qualcomm.hardware.lynx.LynxModule;
 import com.qualcomm.robotcore.eventloop.opmode.Autonomous;
-import com.qualcomm.robotcore.eventloop.opmode.Disabled;
 import com.qualcomm.robotcore.eventloop.opmode.OpMode;
 import com.pedropathing.api.PoseFactory;
 import com.pedropathing.paths.Path;
@@ -26,13 +24,10 @@ import org.firstinspires.ftc.teamcode.opModes.subClasses.Intake;
 import org.firstinspires.ftc.teamcode.opModes.subClasses.Outtake;
 import org.firstinspires.ftc.teamcode.opModes.subClasses.PoseStorage;
 import org.firstinspires.ftc.teamcode.opModes.subClasses.RobotConstants;
-import org.firstinspires.ftc.teamcode.opModes.subClasses.RobotHardware;
 import org.firstinspires.ftc.teamcode.opModes.subClasses.Turret;
 import org.firstinspires.ftc.teamcode.pedro.Constants;
 
-import java.io.FileOutputStream;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
 
 @Configurable
 @Autonomous(name = "00 - Blue Auto", group = "Main")
@@ -41,7 +36,6 @@ public class AbsolutelyAmazingBlueAuto extends OpMode {
     private List<LynxModule> allHubs;
     private Follower follower;
     private Outtake outtake;
-    private RobotHardware robotHardware;
     private Intake intake;
     private Turret turret;
 
@@ -77,8 +71,6 @@ public class AbsolutelyAmazingBlueAuto extends OpMode {
         intake = new Intake();
         turret = new Turret();
 
-        robotHardware = new RobotHardware(hardwareMap);
-
         outtake.init(hardwareMap);
         intake.init(hardwareMap);
 
@@ -104,7 +96,7 @@ public class AbsolutelyAmazingBlueAuto extends OpMode {
         PoseStorage.setBlue();
         PoseStorage.setPose(start);
 
-        turret.setTarget(0.5);
+        turret.setForward();
 
         schedule(autoRoutine());
 
@@ -118,6 +110,8 @@ public class AbsolutelyAmazingBlueAuto extends OpMode {
         Scheduler.execute();
 
         Pose currentPose = follower.pose();
+
+        turret.aimTurret(currentPose);
 
         telemetry.addData("X", follower.pose().x());
         telemetry.addData("Y", follower.pose().y());
@@ -141,7 +135,6 @@ public class AbsolutelyAmazingBlueAuto extends OpMode {
 
                 sequential(
                         instant(() -> {
-                            robotHardware.block();
                             intake.intake(
                                     RobotConstants.FRONT_INTAKE_SPEED,
                                     RobotConstants.BACK_INTAKE_SPEED
@@ -160,13 +153,7 @@ public class AbsolutelyAmazingBlueAuto extends OpMode {
 
         intake.update();
 
-        turret.aimAt(
-                currentPose.x(),
-                currentPose.y(),
-                currentPose.heading(),
-                0.0,
-                0.0
-        );
+        turret.aimTurret(currentPose);
     }
 
 
