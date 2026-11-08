@@ -6,6 +6,8 @@ import com.qualcomm.robotcore.hardware.Servo;
 
 import com.pedropathing.math.Pose;
 
+import org.firstinspires.ftc.vision.apriltag.AprilTagDetection;
+
 @Configurable
 public class Turret {
 
@@ -14,6 +16,11 @@ public class Turret {
     // -------------------------------------------------------------------------
 
     private Servo turretServo;
+    private ArduCam camera;
+
+    private ArduCam.Alliance alliance() {
+        return PoseStorage.isRed() ? ArduCam.Alliance.RED : ArduCam.Alliance.BLUE;
+    }
 
     public static String TURRET_SERVO_NAME = "turretServo";
 
@@ -35,6 +42,11 @@ public class Turret {
     public static double RIGHT_SERVO_LIMIT = 0.6;
 
     public static boolean SERVO_REVERSED = true;
+
+    public static double CAM_GAIN = 0.1;            // per-loop fraction of bearing applied; tune
+    public static double MAX_CAM_OFFSET_DEG = 10.0;
+    public static double CAM_BEARING_SIGN = 1.0;    // flip to -1 if it corrects the wrong way
+    private double camOffsetDeg = 0.0;
 
     // -------------------------------------------------------------------------
     // Aim tuning
@@ -211,6 +223,11 @@ public class Turret {
         holdSide = 1;
 
         setForward();
+
+        camera = new ArduCam(hardwareMap, "Webcam 1").setResolution(640, 480);
+        camera.init();
+        camera.streamToPanels();
+        camera.setEnabled(false);
     }
 
     // -------------------------------------------------------------------------
@@ -333,6 +350,21 @@ public class Turret {
         servoPosition =
                 clampToServoLimits(servoPosition);
 
+        if (RobotConstants.camAssist && !holdingBehind) {
+            AprilTagDetection tag = camera.getAnyHiveDetection(alliance());
+            if (tag != null) {
+                camOffsetDeg += CAM_GAIN * CAM_BEARING_SIGN * tag.ftcPose.bearing;
+                camOffsetDeg = clamp(camOffsetDeg, -MAX_CAM_OFFSET_DEG, MAX_CAM_OFFSET_DEG);
+            }
+        } else {
+            camOffsetDeg = 0.0;   // assist off: go back to pure odometry
+        }
+
+// degrees -> servo units (signed, follows your left/right calibration)
+        servoPosition += camOffsetDeg * (RIGHT_SERVO_LIMIT - SERVO_CENTER) / 90.0;
+
+        servoPosition = clampToServoLimits(servoPosition);   // clamp AFTER the correction
+
         turretServo.setPosition(servoPosition);
 
         lastFinalAngleDeg =
@@ -348,6 +380,10 @@ public class Turret {
      */
     public void aimTurret(Pose robotPose) {
         aimTurret(robotPose, 0.0, 0.0);
+    }
+
+    public void updateCam() {
+        camera.setEnabled(RobotConstants.camAssist);
     }
 
     // -------------------------------------------------------------------------

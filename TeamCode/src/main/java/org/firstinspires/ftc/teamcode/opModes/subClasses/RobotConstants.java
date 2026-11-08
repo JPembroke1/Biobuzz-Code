@@ -68,5 +68,7 @@ public class RobotConstants {
     public static double flowerLiftPos = 0;
     public static double flowerDropPos = 0.35;
 
+    public static boolean camAssist = false;
+    public static boolean lastToggle = false;
 
 }

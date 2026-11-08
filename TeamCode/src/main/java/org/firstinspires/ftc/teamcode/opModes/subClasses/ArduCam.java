@@ -83,6 +83,13 @@ public class ArduCam {
     public enum Alliance { RED, BLUE }
     public enum HiveSide { AUDIENCE, FAR }
 
+    public enum HiveState { UP, DOWN, UNKNOWN }
+
+    private static final int FRAMES_TO_CONFIRM = 5;
+    private HiveState confirmedState = HiveState.UNKNOWN;
+    private HiveState candidateState = HiveState.UNKNOWN;
+    private int candidateCount = 0;
+
     public static class HiveCell {
         public final Alliance alliance;
         public final HiveSide side;
@@ -143,6 +150,59 @@ public class ArduCam {
             }
         }
         return null;
+    }
+
+    /** Raw single-frame read: UP, DOWN (hive tags seen but tilted), or UNKNOWN (no hive tags seen). */
+    private HiveState readRawState(Alliance alliance) {
+        boolean sawAny = false;
+        for (AprilTagDetection d : getHiveDetections()) {
+            HiveCell cell = HIVE_CELL_TAGS.get(d.id);
+            if (cell.alliance != alliance) continue;
+            sawAny = true;
+            if (Math.abs(d.ftcPose.pitch) < UP_CELL_PITCH_THRESHOLD_DEG) {
+                return HiveState.UP;
+            }
+        }
+        return sawAny ? HiveState.DOWN : HiveState.UNKNOWN;
+    }
+
+    /** Call once per loop iteration. Returns a debounced state. */
+    public HiveState updateHiveState(Alliance alliance) {
+        HiveState raw = readRawState(alliance);
+        if (raw == candidateState) {
+            candidateCount++;
+        } else {
+            candidateState = raw;
+            candidateCount = 1;
+        }
+        // UNKNOWN never overwrites a confirmed UP/DOWN, so a blocked view doesn't wipe your last good reading.
+        if (candidateCount >= FRAMES_TO_CONFIRM && candidateState != HiveState.UNKNOWN) {
+            confirmedState = candidateState;
+        }
+        return confirmedState;
+    }
+
+    public HiveState getHiveState() { return confirmedState; }
+
+    private boolean enabled = true;
+
+    public void setEnabled(boolean enabled) {
+        this.enabled = enabled;
+        if (visionPortal != null) {
+            visionPortal.setProcessorEnabled(aprilTag, enabled);
+        }
+    }
+
+    public boolean isEnabled() { return enabled; }
+
+    /** Any visible hive tag for this alliance, for turret tracking regardless of up/down. */
+    public AprilTagDetection getAnyHiveDetection(Alliance alliance) {
+        AprilTagDetection best = null;
+        for (AprilTagDetection d : getHiveDetections()) {
+            if (HIVE_CELL_TAGS.get(d.id).alliance != alliance) continue;
+            if (best == null || d.ftcPose.range < best.ftcPose.range) best = d;
+        }
+        return best;
     }
 
     private static final double UP_CELL_PITCH_THRESHOLD_DEG = 35.0;
@@ -227,6 +287,7 @@ public class ArduCam {
 
     /** All tags visible in the current frame. */
     public List<AprilTagDetection> getDetections() {
+        if (!enabled) return new java.util.ArrayList<>();
         return aprilTag.getDetections();
     }
 

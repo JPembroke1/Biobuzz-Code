@@ -49,6 +49,12 @@ public class AbsolutelyAmazingBlueAuto extends OpMode {
     public static double SHOOT_SETTLE_SECONDS = 1.3;
     public static double SHOOT_FEED_SECONDS = 1.3;
 
+    public static double FLOWER_SHOOT_FEED_SECONDS = 3.5;
+
+    public static double FLOWER_COLLECT_SPEED = 0.5;
+    public static double DRIVE_SPEED = 1;
+    public static double GARDEN_COLLECT_SPEED = 0.8;
+
     public double shooterReadyWaitStartTime = 0.0;
     public boolean shooterReadyTimeoutFired = false;
     public static double SHOOT_READY_TIMEOUT = 1;
@@ -67,22 +73,22 @@ public class AbsolutelyAmazingBlueAuto extends OpMode {
     private final Pose point5 = p.of(14, 118, 0);
 
     private Path path1() {
-        return line(start, point1).linear(start, point1);
+        return line(start, point1).linear(start, point1).with(Constants.foresightConfig.maxPathSpeed.at(GARDEN_COLLECT_SPEED));
     }
 
     private Path path2() {
-        return line(point2Start, point2).linear(point2Start, point2);
+        return line(point2Start, point2).linear(point2Start, point2).with(Constants.foresightConfig.maxPathSpeed.at(FLOWER_COLLECT_SPEED));
     }
 
     private Path path3() {
-        return curve(point3Start, point3Control1, point3).linear(point3Start, point3);
+        return curve(point3Start, point3Control1, point3).linear(point3Start, point3).with(Constants.foresightConfig.maxPathSpeed.at(FLOWER_COLLECT_SPEED));
     }
     private Path path4() {
-        return curve(point4Start, point4Control1, point4).linear(point4Start, point4);
+        return curve(point4Start, point4Control1, point4).linear(point4Start, point4).with(Constants.foresightConfig.maxPathSpeed.at(DRIVE_SPEED));
     }
 
     private Path path5() {
-        return line(point5Start, point5).linear(point5Start, point5);
+        return line(point5Start, point5).linear(point5Start, point5).with(Constants.foresightConfig.maxPathSpeed.at(DRIVE_SPEED));
     }
 
 //    private final Pose start = p.of(8, 8, Math.toRadians(180));
@@ -174,19 +180,28 @@ public class AbsolutelyAmazingBlueAuto extends OpMode {
 
     private Command autoRoutine() {
         return sequential(
-//                followCollect(path1()),
-//
-                shootCycle()
-//
-//                followLowerFlower(path2()),
-//
-//                followRaiseFlower(path3()),
-//
-//                follow(follower, path4()),
-//
-//                follow(follower, path5())
+
+                shootCycle(),
+
+                followCollect(path1()),
+
+                followLowerFlower(path2()),
+
+                flowerShootCycle(),
+
+                followCollect(path3()),
+
+                followRaiseFlower(path4()),
+
+                shootCycle(),
+
+                follow(follower, path5())
         );
     }
+
+//    private Command setFollowerPower(double power) {
+//        return instant(() -> follower.setMaxPower(0.7);
+//    }
 
     private Command followCollect(Path path) {
         return parallel(
@@ -252,6 +267,35 @@ public class AbsolutelyAmazingBlueAuto extends OpMode {
 
                 race(
                         waitSeconds(SHOOT_FEED_SECONDS),
+                        infinite(this::runShootFeed)
+                ),
+
+                instant(this::stopIntakeAndBlock)
+        );
+    }
+
+    private Command flowerShootCycle() {
+        return sequential(
+                instant(() -> {
+                    startShooterReadyWait();
+
+                    outtake.setTargetTPS(RobotConstants.OUTTAKE_TPS);
+
+                    stopIntakeAndBlock();
+                }),
+
+                race(
+                        waitUntil(this::shooterReadyOrTimedOut),
+                        infinite(this::holdShooterAndBlock)
+                ),
+
+                race(
+                        waitSeconds(SHOOT_SETTLE_SECONDS),
+                        infinite(this::releaseBlocker)
+                ),
+
+                race(
+                        waitSeconds(FLOWER_SHOOT_FEED_SECONDS),
                         infinite(this::runShootFeed)
                 ),
 

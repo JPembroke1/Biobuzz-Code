@@ -12,6 +12,7 @@ import com.qualcomm.robotcore.hardware.PwmControl;
 import com.qualcomm.robotcore.hardware.Servo;
 import com.qualcomm.robotcore.hardware.ServoImplEx;
 
+import org.firstinspires.ftc.teamcode.opModes.subClasses.ArduCam;
 import org.firstinspires.ftc.teamcode.opModes.subClasses.Brakes;
 import org.firstinspires.ftc.teamcode.opModes.subClasses.Flower;
 import org.firstinspires.ftc.teamcode.opModes.subClasses.Intake;
@@ -245,6 +246,9 @@ public class IntakeTest extends OpMode {
 
         intake.update();
 
+
+        turret.updateCam();
+
         // Telemetry goes last so it shows the current loop's turret command.
         displayTelemetry();
     }
@@ -254,6 +258,10 @@ public class IntakeTest extends OpMode {
     // -------------------------------------------------------------------------
 
     private void handleControls() {
+
+        if (gamepad2.crossWasPressed()) {
+            RobotConstants.camAssist = !RobotConstants.camAssist;
+        }
 
         // =====================================================================
         // INTAKE AND FEEDER
