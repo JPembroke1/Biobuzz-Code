@@ -8,13 +8,17 @@ import com.pedropathing.math.Pose;
 import com.qualcomm.hardware.lynx.LynxModule;
 import com.qualcomm.robotcore.eventloop.opmode.OpMode;
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
+import com.qualcomm.robotcore.hardware.PwmControl;
 import com.qualcomm.robotcore.hardware.Servo;
+import com.qualcomm.robotcore.hardware.ServoImplEx;
 
 import org.firstinspires.ftc.teamcode.opModes.subClasses.Brakes;
+import org.firstinspires.ftc.teamcode.opModes.subClasses.Flower;
 import org.firstinspires.ftc.teamcode.opModes.subClasses.Intake;
 import org.firstinspires.ftc.teamcode.opModes.subClasses.Outtake;
 import org.firstinspires.ftc.teamcode.opModes.subClasses.PoseStorage;
 import org.firstinspires.ftc.teamcode.opModes.subClasses.RobotConstants;
+import org.firstinspires.ftc.teamcode.opModes.subClasses.RobotSettings;
 import org.firstinspires.ftc.teamcode.opModes.subClasses.Turret;
 import org.firstinspires.ftc.teamcode.pedro.Constants;
 
@@ -38,11 +42,13 @@ public class IntakeTest extends OpMode {
     private Outtake outtake;
     private Brakes brakes;
     private Turret turret;
+    private Flower flower;
+    private RobotSettings robotSettings;
 
     // The follower owns the mecanum drivetrain and localizer.
     private Follower follower;
 
-    private Servo blockServo;
+    public ServoImplEx led;
 
     private List<LynxModule> hubs;
 
@@ -51,6 +57,10 @@ public class IntakeTest extends OpMode {
     // -------------------------------------------------------------------------
 
     private String allianceLabel = "UNKNOWN";
+
+
+    public static double red = 0.310;
+    public static double blue = 0.650;
 
     public static double BLUE_GOAL_X = 6.0;
     public static double BLUE_GOAL_Y = 138.0;
@@ -106,6 +116,8 @@ public class IntakeTest extends OpMode {
 
     public static boolean CUBIC_STRAFE_TURN = false;
 
+    public static boolean FLOWER_ACTIVE = false;
+
     // -------------------------------------------------------------------------
     // Runtime state
     // -------------------------------------------------------------------------
@@ -150,22 +162,20 @@ public class IntakeTest extends OpMode {
         turret = new Turret();
         turret.init(hardwareMap);
 
-        blockServo = hardwareMap.get(
-                Servo.class,
-                "blockServo"
-        );
+        flower = new Flower();
+        flower.init(hardwareMap);
 
-        blockServo.setDirection(
-                Servo.Direction.FORWARD
-        );
-
-        blockServo.setPosition(
-                RobotConstants.blockClosePos
-        );
+        robotSettings = new RobotSettings();
+        robotSettings.init(hardwareMap);
 
         // The turret's mechanical centre physically points backwards relative
         // to the robot because TURRET_ZERO_OFFSET_DEG is 180 degrees.
         turret.setCentre();
+
+//        led = hardwareMap.get(ServoImplEx.class, "disLed");
+//        led.setPwmRange(new PwmControl.PwmRange(500, 2500));
+//        led.setPwmEnable();
+
 
         applyAllianceFromPoseStorage();
 
@@ -190,6 +200,8 @@ public class IntakeTest extends OpMode {
         }
 
         autoAimMode = true;
+
+
     }
 
     // -------------------------------------------------------------------------
@@ -226,8 +238,12 @@ public class IntakeTest extends OpMode {
         updateGoalFromHive();
         updateTurretAim(currentPose);
 
+        //updateDistanceCheck(turret.getDistanceToTarget());
+
         // Update shooter, feeder and hood controllers.
         outtake.update();
+
+        intake.update();
 
         // Telemetry goes last so it shows the current loop's turret command.
         displayTelemetry();
@@ -252,17 +268,13 @@ public class IntakeTest extends OpMode {
                     RobotConstants.BACK_INTAKE_SPEED
             );
 
-            blockServo.setPosition(
-                    RobotConstants.blockClosePos
-            );
+            robotSettings.block();
 
             RobotConstants.timer = 0;
 
         } else if (gamepad1.right_trigger > 0.3) {
 
-            blockServo.setPosition(
-                    RobotConstants.blockOpenPos
-            );
+            robotSettings.release();
 
             RobotConstants.timer += 0.1;
 
@@ -288,9 +300,7 @@ public class IntakeTest extends OpMode {
 
             intake.stopIntake();
 
-            blockServo.setPosition(
-                    RobotConstants.blockClosePos
-            );
+            robotSettings.block();
 
             RobotConstants.timer = 0;
         }
@@ -350,6 +360,20 @@ public class IntakeTest extends OpMode {
 
         if (gamepad1.dpad_down) {
             brakes.lowerBrakes();
+        }
+
+        // ====================================================================
+        // FLOWER
+        // ====================================================================
+
+        if (gamepad1.dpadRightWasPressed()) {
+            FLOWER_ACTIVE = !FLOWER_ACTIVE;
+        }
+
+        if (FLOWER_ACTIVE) {
+            flower.flowerActivate(RobotConstants.flowerDropPos);
+        } else {
+                flower.flowerActivate(RobotConstants.flowerLiftPos);
         }
     }
 
@@ -468,6 +492,14 @@ public class IntakeTest extends OpMode {
         );
 
         follower.update();
+    }
+
+    private void updateDistanceCheck(double distance) {
+        if (distance > 100) {
+            led.setPosition(blue);
+        } else {
+            led.setPosition(red);
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -962,6 +994,8 @@ public class IntakeTest extends OpMode {
                 "Pose",
                 follower.pose()
         );
+
+        telemetry.addData("SensorTriggered", Intake.sensorTriggered);
 
         telemetry.update();
     }

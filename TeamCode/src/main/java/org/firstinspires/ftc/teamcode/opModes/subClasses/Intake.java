@@ -48,9 +48,9 @@ public class Intake {
         ballSensor = hardwareMap.get(DigitalChannel.class, "ballSensor");
         ballSensor.setMode(DigitalChannel.Mode.INPUT);
 
-        //led = hardwareMap.get(ServoImplEx.class, "led");
-        //led.setPwmRange(new PwmControl.PwmRange(500, 2500));
-        //led.setPwmEnable();
+        led = hardwareMap.get(ServoImplEx.class, "ballLed");
+        led.setPwmRange(new PwmControl.PwmRange(500, 2500));
+        led.setPwmEnable();
 
         rawSensorState = ballSensor.getState();
         sensorTriggered = getSensorTriggeredFromRaw(rawSensorState);
@@ -152,7 +152,7 @@ public class Intake {
     public void setLedPosition(double position) {
         double clippedPosition = clamp(position, 0.0, 1.0);
 
-        //led.setPosition(clippedPosition);
+        led.setPosition(clippedPosition);
         lastLedPosition = clippedPosition;
     }
 

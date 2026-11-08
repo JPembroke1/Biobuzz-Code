@@ -65,5 +65,8 @@ public class RobotConstants {
     public static double leftLiftBrakesPos = 0.1;
     public static double leftLowerBrakePos = 0.53;
 
+    public static double flowerLiftPos = 0;
+    public static double flowerDropPos = 0.35;
+
 
 }
