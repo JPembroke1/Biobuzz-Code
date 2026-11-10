@@ -36,7 +36,7 @@ import java.util.List;
 
 @Configurable
 @Autonomous(
-        name = "04 - Delayed Flower Red Path 5 Auto",
+        name = "01 - Delayed Flower Red Path 5 Auto",
         group = "Main"
 )
 public class DelayedFlowerRedPath5Auto extends OpMode {

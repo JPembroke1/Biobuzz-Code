@@ -36,7 +36,7 @@ import java.util.List;
 
 @Configurable
 @Autonomous(
-        name = "01 - Blue Auto Fixed Turret",
+        name = "02 - Blue Auto Fixed Turret",
         group = "Main"
 )
 public class AbsolutelyAmazingTwoTipBlueAuto extends OpMode {

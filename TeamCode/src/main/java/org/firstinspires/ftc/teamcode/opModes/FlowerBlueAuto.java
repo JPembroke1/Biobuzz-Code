@@ -56,7 +56,7 @@ public class FlowerBlueAuto extends OpMode {
 
 
     // -------------------------------------------------------------------------
-    // Pose factory
+    // Pedro pose factory
     // -------------------------------------------------------------------------
 
     private final PoseFactory poseFactory =
@@ -66,16 +66,15 @@ public class FlowerBlueAuto extends OpMode {
     // -------------------------------------------------------------------------
     // Fixed turret positions
     //
-    // 0.0 = full robot-right
-    // 0.5 = centre, pointing robot-back
-    // 1.0 = full robot-left
+    // Mirrored around servo centre:
+    // bluePosition = 1.0 - redPosition
     // -------------------------------------------------------------------------
 
-    public static double PRELOAD_TURRET_POSITION = 0.0;
+    public static double PRELOAD_TURRET_POSITION = 1.0;
 
-    public static double FAR_WALL_TURRET_POSITION = 0.30;
+    public static double FAR_WALL_TURRET_POSITION = 0.70;
 
-    public static double SECOND_FLOWER_TURRET_POSITION = 0.40;
+    public static double SECOND_FLOWER_TURRET_POSITION = 0.60;
 
     public static double TRAVEL_TURRET_POSITION = 0.50;
 
@@ -83,94 +82,47 @@ public class FlowerBlueAuto extends OpMode {
 
 
     // -------------------------------------------------------------------------
-    // Optimized path speeds
+    // Path speeds
     // -------------------------------------------------------------------------
 
     public static double DRIVE_SPEED = 1.00;
 
-    /*
-     * Increased from 0.55.
-     */
     public static double FLOWER_APPROACH_SPEED = 0.70;
 
-    /*
-     * Increased from 0.25.
-     *
-     * This is still substantially slower than normal travel.
-     */
     public static double FLOWER_COLLECT_SPEED = 0.35;
 
-    /*
-     * Increased from 0.25.
-     */
     public static double WALL_APPROACH_SPEED = 0.35;
 
     public static double PARK_SPEED = 1.00;
 
 
     // -------------------------------------------------------------------------
-    // Optimized shooting timing
+    // Shooting timing
     // -------------------------------------------------------------------------
 
-    /*
-     * Reduced from 0.30 seconds.
-     */
     public static double TURRET_SETTLE_SECONDS = 0.20;
 
-    /*
-     * Maximum wait for shooter speed.
-     */
     public static double SHOOT_READY_TIMEOUT_SECONDS = 0.70;
 
-    /*
-     * Time between releasing the blocker and beginning feed.
-     *
-     * Reduced from 1.30 seconds.
-     */
     public static double BLOCK_RELEASE_SECONDS = 0.40;
 
-    /*
-     * Feed time for the single preload.
-     */
     public static double PRELOAD_FEED_SECONDS = 1.00;
 
-    /*
-     * Feed time for pollen collected from each Flower.
-     */
     public static double FLOWER_FEED_SECONDS = 1.60;
 
 
     // -------------------------------------------------------------------------
-    // Optimized Flower timing
+    // Flower timing
     // -------------------------------------------------------------------------
 
-    /*
-     * Time for the Flower mechanism to lower before the robot moves into the
-     * Flower.
-     */
     public static double FLOWER_DEPLOY_SECONDS = 0.20;
 
-    /*
-     * The first Flower was previously not receiving enough intake time.
-     *
-     * This remains longer than the second Flower hold.
-     */
     public static double FIRST_FLOWER_INTAKE_HOLD_SECONDS = 0.75;
 
-    /*
-     * The robot shoots immediately after the second Flower, so this hold can
-     * be shorter.
-     */
     public static double SECOND_FLOWER_INTAKE_HOLD_SECONDS = 0.45;
 
-    /*
-     * Begin raising the Flower after reversing for this long on Path 3.
-     */
     public static double FLOWER_REVERSE_CLEAR_SECONDS = 0.35;
 
-    /*
-     * Raise the Flower shortly after the parking path begins.
-     */
     public static double FLOWER_LIFT_DELAY_SECONDS = 0.20;
 
 
@@ -215,82 +167,82 @@ public class FlowerBlueAuto extends OpMode {
 
 
     // -------------------------------------------------------------------------
-    // Route poses
+    // Mirrored Blue route
+    //
+    // X is reflected over the 144-inch field:
+    // blueX = 144.0 - redX
+    //
+    // Y remains unchanged.
+    //
+    // Heading is reflected:
+    // blueHeading = 180.0 - redHeading
     // -------------------------------------------------------------------------
 
     private final Pose start =
             poseFactory.of(
-                    52.3532,
+                    91.6468,
                     8.0,
-                    180.0
+                    0.0
             );
 
 
     // -------------------------------------------------------------------------
     // Path 1
-    //
-    // Line up in front of the first Flower.
     // -------------------------------------------------------------------------
 
     private final Pose path1End =
             poseFactory.of(
-                    22.4811,
+                    121.5189,
                     45.4390,
-                    180.0
+                    0.0
             );
 
 
     // -------------------------------------------------------------------------
     // Path 2
-    //
-    // Approach the first Flower slightly off-centre.
     // -------------------------------------------------------------------------
 
     private final Pose point2Start =
             poseFactory.of(
-                    22.4811,
+                    121.5189,
                     45.4390,
-                    180.0
+                    0.0
             );
 
     private final Pose point2 =
             poseFactory.of(
-                    12.7950,
+                    131.2050,
                     45.9688,
-                    170.0
+                    10.0
             );
 
 
     // -------------------------------------------------------------------------
     // Path 3
-    //
-    // Reverse clear of the first Flower.
     // -------------------------------------------------------------------------
 
     private final Pose point3 =
             poseFactory.of(
-                    22.3555,
+                    121.6445,
                     46.1482,
-                    -178.9251
+                    -1.0749
             );
 
 
     // -------------------------------------------------------------------------
     // Path 4
-    //
-    // Long drive toward the far wall.
     // -------------------------------------------------------------------------
 
     private final Pose point4Start =
             poseFactory.of(
-                    22.3555,
+                    121.6445,
                     46.1482,
-                    180.0
+                    0.0
             );
 
     private final Pose point4 =
             poseFactory.of(
-                    22.6871,
+                    121.3129,
                     94.7054,
                     90.0
             );
@@ -298,20 +250,18 @@ public class FlowerBlueAuto extends OpMode {
 
     // -------------------------------------------------------------------------
     // Path 5
-    //
-    // Final controlled wall approach.
     // -------------------------------------------------------------------------
 
     private final Pose point5Start =
             poseFactory.of(
-                    22.6871,
+                    121.3129,
                     94.7054,
                     90.0
             );
 
     private final Pose point5 =
             poseFactory.of(
-                    23.7064,
+                    120.2936,
                     130.1432,
                     90.0
             );
@@ -319,20 +269,18 @@ public class FlowerBlueAuto extends OpMode {
 
     // -------------------------------------------------------------------------
     // Path 6
-    //
-    // Reverse from the wall and line up with the second Flower.
     // -------------------------------------------------------------------------
 
     private final Pose point6Start =
             poseFactory.of(
-                    23.7064,
+                    120.2936,
                     130.1432,
                     90.0
             );
 
     private final Pose point6 =
             poseFactory.of(
-                    42.0,
+                    102.0,
                     104.1657,
                     90.0
             );
@@ -340,43 +288,39 @@ public class FlowerBlueAuto extends OpMode {
 
     // -------------------------------------------------------------------------
     // Path 7
-    //
-    // Collect from the second Flower.
     // -------------------------------------------------------------------------
 
     private final Pose point7Start =
             poseFactory.of(
-                    42.0,
+                    102.0,
                     104.1657,
                     90.0
             );
 
     private final Pose point7 =
             poseFactory.of(
-                    42.0,
+                    102.0,
                     127.0,
-                    80.0
+                    100.0
             );
 
 
     // -------------------------------------------------------------------------
     // Path 8
-    //
-    // Park.
     // -------------------------------------------------------------------------
 
     private final Pose point8Start =
             poseFactory.of(
-                    42.0,
+                    102.0,
                     127.0,
-                    80.0
+                    100.0
             );
 
     private final Pose point8 =
             poseFactory.of(
-                    5.0,
+                    139.0,
                     116.1719,
-                    0.0
+                    180.0
             );
 
 
@@ -542,9 +486,9 @@ public class FlowerBlueAuto extends OpMode {
 
 
     // -------------------------------------------------------------------------
-    // Local Pedro Path adapter
+    // Local Pedro Path command
     //
-    // This avoids the incompatible PedroCommands.follow() PathChain signature.
+    // Avoids the incompatible PedroCommands.follow(PathChain) overload.
     // -------------------------------------------------------------------------
 
     private Command followPath(
@@ -740,7 +684,7 @@ public class FlowerBlueAuto extends OpMode {
         clearBulkCache();
 
         /*
-         * Run Ivy first so a newly started path is configured before Pedro's
+         * Run Ivy first so newly started paths are assigned before the Pedro
          * drivetrain update.
          */
         Scheduler.execute();
@@ -757,28 +701,16 @@ public class FlowerBlueAuto extends OpMode {
             );
         }
 
-        /*
-         * Maintain the selected fixed turret command.
-         */
         turret.setFixedServoPosition(
                 activeTurretPosition
         );
 
-        /*
-         * Update the intake sensor and ball counter.
-         */
         intake.update();
 
-        /*
-         * Maintain the hood base position.
-         */
         outtake.setHoodPosition(
                 RobotConstants.HOOD_POSITION
         );
 
-        /*
-         * Update shooter, feeder, voltage compensation and hood compensation.
-         */
         outtake.update();
 
         displayTelemetry(
@@ -810,17 +742,14 @@ public class FlowerBlueAuto extends OpMode {
         PoseStorage.setBlue();
 
         if (outtake != null) {
-
             outtake.stopOuttake();
         }
 
         if (intake != null) {
-
             intake.stopIntake();
         }
 
         if (robotSettings != null) {
-
             robotSettings.block();
         }
 
@@ -832,24 +761,20 @@ public class FlowerBlueAuto extends OpMode {
         }
 
         if (turret != null) {
-
             turret.setCentre();
         }
     }
 
 
     // -------------------------------------------------------------------------
-    // Optimized autonomous routine
+    // Autonomous routine
     // -------------------------------------------------------------------------
 
     private Command autoRoutine() {
 
         return sequential(
 
-                // -------------------------------------------------------------
                 // Preload shot
-                // -------------------------------------------------------------
-
                 shootCycle(
                         PRELOAD_TURRET_POSITION,
                         PRELOAD_FEED_SECONDS
@@ -859,27 +784,14 @@ public class FlowerBlueAuto extends OpMode {
                         this::setTravelTurretPosition
                 ),
 
-
-                // -------------------------------------------------------------
                 // Path 1
-                //
-                // Line up with the first Flower.
-                // -------------------------------------------------------------
-
                 followTravel(
                         path1(),
                         PATH1_TIMEOUT_SECONDS,
                         "PATH 1"
                 ),
 
-
-                // -------------------------------------------------------------
-                // Path 2
-                //
-                // Lower Flower and collect.
-                // Includes a 0.75-second stationary intake hold.
-                // -------------------------------------------------------------
-
+                // Path 2, first Flower
                 collectFlower(
                         path2(),
                         PATH2_TIMEOUT_SECONDS,
@@ -887,48 +799,24 @@ public class FlowerBlueAuto extends OpMode {
                         "PATH 2"
                 ),
 
-
-                // -------------------------------------------------------------
-                // Path 3
-                //
-                // Reverse clear and raise Flower concurrently.
-                // -------------------------------------------------------------
-
+                // Path 3, reverse and lift Flower
                 reverseAndLiftFlower(),
 
-
-                // -------------------------------------------------------------
-                // Path 4
-                //
-                // Long drive begins without an additional Flower-lift delay.
-                // -------------------------------------------------------------
-
+                // Path 4, long drive
                 followTravel(
                         path4(),
                         PATH4_TIMEOUT_SECONDS,
                         "PATH 4"
                 ),
 
-
-                // -------------------------------------------------------------
-                // Path 5
-                //
-                // Final controlled wall approach.
-                // -------------------------------------------------------------
-
+                // Path 5, controlled wall approach
                 followTravel(
                         path5(),
                         PATH5_TIMEOUT_SECONDS,
                         "PATH 5"
                 ),
 
-
-                // -------------------------------------------------------------
                 // Far-wall shot
-                //
-                // Turret position = 0.30.
-                // -------------------------------------------------------------
-
                 shootCycle(
                         FAR_WALL_TURRET_POSITION,
                         FLOWER_FEED_SECONDS
@@ -938,26 +826,14 @@ public class FlowerBlueAuto extends OpMode {
                         this::setTravelTurretPosition
                 ),
 
-
-                // -------------------------------------------------------------
-                // Path 6
-                //
-                // Move in front of the second Flower.
-                // -------------------------------------------------------------
-
+                // Path 6, second Flower line-up
                 followTravel(
                         path6(),
                         PATH6_TIMEOUT_SECONDS,
                         "PATH 6"
                 ),
 
-
-                // -------------------------------------------------------------
-                // Path 7
-                //
-                // Collect second Flower with shorter stationary hold.
-                // -------------------------------------------------------------
-
+                // Path 7, second Flower
                 collectFlower(
                         path7(),
                         PATH7_TIMEOUT_SECONDS,
@@ -965,11 +841,7 @@ public class FlowerBlueAuto extends OpMode {
                         "PATH 7"
                 ),
 
-
-                // -------------------------------------------------------------
-                // Shoot immediately from second Flower position.
-                // -------------------------------------------------------------
-
+                // Shoot from second Flower position
                 shootCycle(
                         SECOND_FLOWER_TURRET_POSITION,
                         FLOWER_FEED_SECONDS
@@ -979,19 +851,8 @@ public class FlowerBlueAuto extends OpMode {
                         this::setTravelTurretPosition
                 ),
 
-
-                // -------------------------------------------------------------
-                // Path 8
-                //
-                // Park and lift Flower.
-                // -------------------------------------------------------------
-
+                // Path 8, park and raise Flower
                 parkAndLiftFlower(),
-
-
-                // -------------------------------------------------------------
-                // Finish
-                // -------------------------------------------------------------
 
                 instant(
                         this::finishAutoMechanisms
@@ -1013,10 +874,6 @@ public class FlowerBlueAuto extends OpMode {
 
         return sequential(
 
-                // -------------------------------------------------------------
-                // Lower Flower and start intake
-                // -------------------------------------------------------------
-
                 instant(
                         () -> {
 
@@ -1037,19 +894,9 @@ public class FlowerBlueAuto extends OpMode {
                         }
                 ),
 
-
-                // -------------------------------------------------------------
-                // Short deployment delay
-                // -------------------------------------------------------------
-
                 waitSeconds(
                         FLOWER_DEPLOY_SECONDS
                 ),
-
-
-                // -------------------------------------------------------------
-                // Drive into Flower
-                // -------------------------------------------------------------
 
                 followWithTimeout(
                         path,
@@ -1057,11 +904,9 @@ public class FlowerBlueAuto extends OpMode {
                         pathName
                 ),
 
-
-                // -------------------------------------------------------------
-                // Stationary intake hold
-                // -------------------------------------------------------------
-
+                /*
+                 * Hold stationary at the Flower while intake continues.
+                 */
                 race(
 
                         waitSeconds(
@@ -1073,11 +918,9 @@ public class FlowerBlueAuto extends OpMode {
                         )
                 ),
 
-
-                // -------------------------------------------------------------
-                // Stop intake but leave Flower down
-                // -------------------------------------------------------------
-
+                /*
+                 * Stop intake but leave Flower lowered.
+                 */
                 instant(
                         this::stopIntakeAndBlock
                 )
@@ -1123,19 +966,12 @@ public class FlowerBlueAuto extends OpMode {
 
                 parallel(
 
-                        /*
-                         * Reverse away using Path 3.
-                         */
                         followWithTimeout(
                                 path3(),
                                 PATH3_TIMEOUT_SECONDS,
                                 "PATH 3"
                         ),
 
-                        /*
-                         * Wait until clear, then begin raising the Flower while
-                         * the robot is still moving.
-                         */
                         sequential(
 
                                 waitSeconds(
@@ -1241,7 +1077,7 @@ public class FlowerBlueAuto extends OpMode {
 
 
     // -------------------------------------------------------------------------
-    // Optimized shooting cycle
+    // Shooting cycle
     // -------------------------------------------------------------------------
 
     private Command shootCycle(
@@ -1250,10 +1086,6 @@ public class FlowerBlueAuto extends OpMode {
     ) {
 
         return sequential(
-
-                // -------------------------------------------------------------
-                // Start shooter and position turret
-                // -------------------------------------------------------------
 
                 instant(
                         () -> {
@@ -1265,8 +1097,7 @@ public class FlowerBlueAuto extends OpMode {
                             );
 
                             /*
-                             * The target is retained after the shot so the
-                             * shooter stays spinning through autonomous.
+                             * Keep the shooter spinning throughout autonomous.
                              */
                             outtake.setTargetTPS(
                                     RobotConstants.OUTTAKE_TPS
@@ -1278,11 +1109,7 @@ public class FlowerBlueAuto extends OpMode {
                         }
                 ),
 
-
-                // -------------------------------------------------------------
                 // Short turret settle
-                // -------------------------------------------------------------
-
                 race(
 
                         waitSeconds(
@@ -1294,11 +1121,7 @@ public class FlowerBlueAuto extends OpMode {
                         )
                 ),
 
-
-                // -------------------------------------------------------------
-                // Shooter ready or short timeout
-                // -------------------------------------------------------------
-
+                // Shooter ready or timeout
                 race(
 
                         waitUntil(
@@ -1310,11 +1133,7 @@ public class FlowerBlueAuto extends OpMode {
                         )
                 ),
 
-
-                // -------------------------------------------------------------
-                // Release blocker before feeding
-                // -------------------------------------------------------------
-
+                // Release blocker
                 race(
 
                         waitSeconds(
@@ -1326,11 +1145,7 @@ public class FlowerBlueAuto extends OpMode {
                         )
                 ),
 
-
-                // -------------------------------------------------------------
                 // Feed shot
-                // -------------------------------------------------------------
-
                 race(
 
                         waitSeconds(
@@ -1341,11 +1156,6 @@ public class FlowerBlueAuto extends OpMode {
                                 this::runShootFeed
                         )
                 ),
-
-
-                // -------------------------------------------------------------
-                // Stop intake and feeder
-                // -------------------------------------------------------------
 
                 instant(
                         this::stopIntakeAndBlock
@@ -1360,9 +1170,6 @@ public class FlowerBlueAuto extends OpMode {
 
     private void holdShooterAndBlock() {
 
-        /*
-         * Shooter flywheel retains its target TPS.
-         */
         intake.stopIntake();
 
         outtake.setFeederTPS(
@@ -1423,7 +1230,6 @@ public class FlowerBlueAuto extends OpMode {
     private boolean shooterReadyOrTimedOut() {
 
         if (isShooterAtSpeed()) {
-
             return true;
         }
 
@@ -1516,9 +1322,6 @@ public class FlowerBlueAuto extends OpMode {
 
         stopIntakeAndBlock();
 
-        /*
-         * Stop the shooter only after all shooting is complete.
-         */
         outtake.setTargetTPS(
                 0.0
         );
@@ -1536,7 +1339,7 @@ public class FlowerBlueAuto extends OpMode {
 
 
     // -------------------------------------------------------------------------
-    // Turret control
+    // Turret
     // -------------------------------------------------------------------------
 
     private void setFixedTurretPosition(
@@ -1905,7 +1708,6 @@ public class FlowerBlueAuto extends OpMode {
     private void clearBulkCache() {
 
         if (allHubs == null) {
-
             return;
         }
 
