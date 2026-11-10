@@ -1,39 +1,24 @@
 package org.firstinspires.ftc.teamcode.opModes;
 
 import com.bylazar.configurables.annotations.Configurable;
-import com.pedropathing.api.PoseFactory;
-import com.pedropathing.drivetrain.DrivePowers;
 import com.pedropathing.follower.Follower;
 import com.pedropathing.math.Pose;
-import com.qualcomm.hardware.lynx.LynxModule;
 import com.qualcomm.robotcore.eventloop.opmode.OpMode;
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
-import com.qualcomm.robotcore.hardware.PwmControl;
+import com.qualcomm.robotcore.hardware.DcMotor;
+import com.qualcomm.robotcore.hardware.DcMotorSimple;
 import com.qualcomm.robotcore.hardware.Servo;
-import com.qualcomm.robotcore.hardware.ServoImplEx;
 
-import org.firstinspires.ftc.teamcode.opModes.subClasses.ArduCam;
-import org.firstinspires.ftc.teamcode.opModes.subClasses.Brakes;
-import org.firstinspires.ftc.teamcode.opModes.subClasses.Flower;
 import org.firstinspires.ftc.teamcode.opModes.subClasses.Intake;
 import org.firstinspires.ftc.teamcode.opModes.subClasses.Outtake;
 import org.firstinspires.ftc.teamcode.opModes.subClasses.PoseStorage;
 import org.firstinspires.ftc.teamcode.opModes.subClasses.RobotConstants;
-import org.firstinspires.ftc.teamcode.opModes.subClasses.RobotSettings;
 import org.firstinspires.ftc.teamcode.opModes.subClasses.Turret;
 import org.firstinspires.ftc.teamcode.pedro.Constants;
-
-import java.util.List;
 
 @Configurable
 @TeleOp(name = "Intake Test", group = "Main")
 public class IntakeTest extends OpMode {
-
-    // -------------------------------------------------------------------------
-    // Pedro pose factory
-    // -------------------------------------------------------------------------
-
-    private final PoseFactory p = PoseFactory.degrees();
 
     // -------------------------------------------------------------------------
     // Subsystems
@@ -41,40 +26,52 @@ public class IntakeTest extends OpMode {
 
     private Intake intake;
     private Outtake outtake;
-    private Brakes brakes;
     private Turret turret;
-    private Flower flower;
-    private RobotSettings robotSettings;
 
-    // The follower owns the mecanum drivetrain and localizer.
     private Follower follower;
 
-    public ServoImplEx led;
-
-    private List<LynxModule> hubs;
 
     // -------------------------------------------------------------------------
-    // Alliance and target configuration
+    // Drivetrain hardware
+    // -------------------------------------------------------------------------
+
+    private DcMotor frontRightMotor;
+    private DcMotor frontLeftMotor;
+    private DcMotor backRightMotor;
+    private DcMotor backLeftMotor;
+
+
+    // -------------------------------------------------------------------------
+    // Block servo
+    // -------------------------------------------------------------------------
+
+    private Servo blockServo;
+
+
+    // -------------------------------------------------------------------------
+    // Alliance
     // -------------------------------------------------------------------------
 
     private String allianceLabel = "UNKNOWN";
 
 
-    public static double red = 0.310;
-    public static double blue = 0.650;
+    // -------------------------------------------------------------------------
+    // Goal coordinates
+    //
+    // Red is on the field's X = 0 side.
+    // Blue is on the opposite side.
+    // -------------------------------------------------------------------------
 
-    public static double BLUE_GOAL_X = 6.0;
-    public static double BLUE_GOAL_Y = 138.0;
-
-    public static double RED_GOAL_X = 138.0;
+    public static double RED_GOAL_X = 6.0;
     public static double RED_GOAL_Y = 138.0;
 
-    public static double TELEOP_RESET_X = 24.0;
-    public static double TELEOP_RESET_Y = 138.0;
-    public static double TELEOP_RESET_HEADING_DEG = 145.0;
+    public static double BLUE_GOAL_X = 138.0;
+    public static double BLUE_GOAL_Y = 138.0;
 
-    public static double TELEOP_GOAL_X = 6.0;
-    public static double TELEOP_GOAL_Y = 138.0;
+
+    // -------------------------------------------------------------------------
+    // TeleOp reset poses
+    // -------------------------------------------------------------------------
 
     public static double BLUE_RESET_X = 24.0;
     public static double BLUE_RESET_Y = 138.0;
@@ -84,54 +81,53 @@ public class IntakeTest extends OpMode {
     public static double RED_RESET_Y = 138.0;
     public static double RED_RESET_HEADING_DEG = 35.0;
 
-    // -------------------------------------------------------------------------
-    // Pedro corner reset
-    //
-    // This reset assumes the robot localization point is at the centre of a
-    // square robot. RobotConstants.ROBOT_LENGTH_MM is used for both dimensions.
-    //
-    // With ROBOT_LENGTH_MM = 280:
-    //
-    // 280 / 2 / 25.4 = approximately 5.51 inches.
-    //
-    // The resulting Pedro pose is approximately:
-    //
-    // x = 5.51
-    // y = 5.51
-    // heading = 180 degrees
-    // -------------------------------------------------------------------------
-
-    public static double CORNER_RESET_HEADING_DEG = 180.0;
 
     // -------------------------------------------------------------------------
-    // Drive configuration
+    // Active reset pose
+    //
+    // These values are updated from PoseStorage during initialization.
     // -------------------------------------------------------------------------
 
-    // Pedro convention:
-    // forward = -left stick Y
-    // strafe positive = left
-    // turn positive = counter-clockwise
-    public static double FORWARD_SIGN = -1.0;
-    public static double STRAFE_SIGN = -1.0;
-    public static double TURN_SIGN = -1.0;
+    public static double TELEOP_RESET_X = BLUE_RESET_X;
+    public static double TELEOP_RESET_Y = BLUE_RESET_Y;
 
-    public static boolean CUBIC_STRAFE_TURN = false;
+    public static double TELEOP_RESET_HEADING_DEG =
+            BLUE_RESET_HEADING_DEG;
 
-    public static boolean FLOWER_ACTIVE = false;
 
     // -------------------------------------------------------------------------
-    // Runtime state
+    // Active goal
+    // -------------------------------------------------------------------------
+
+    public static double TELEOP_GOAL_X = BLUE_GOAL_X;
+    public static double TELEOP_GOAL_Y = BLUE_GOAL_Y;
+
+
+    // -------------------------------------------------------------------------
+    // Button edge detection
+    // -------------------------------------------------------------------------
+
+    private boolean previousPoseResetButton = false;
+    private boolean previousAutoAimButton = false;
+    private boolean previousCentreButton = false;
+
+
+    // -------------------------------------------------------------------------
+    // Turret state
     // -------------------------------------------------------------------------
 
     private boolean autoAimMode = true;
-    private boolean shooterActive = false;
 
-    // Which end of the HIVE currently holds the upward CELL.
-    private boolean hiveEndRight = true;
-
-    // These remain zero until real field-frame velocity is supplied.
     private double estimatedFieldVelocityX = 0.0;
     private double estimatedFieldVelocityY = 0.0;
+
+
+    // -------------------------------------------------------------------------
+    // Feed timing
+    // -------------------------------------------------------------------------
+
+    private long feedStartTimeMs = -1;
+
 
     // -------------------------------------------------------------------------
     // Initialization
@@ -142,49 +138,131 @@ public class IntakeTest extends OpMode {
 
         follower = Constants.create(hardwareMap);
 
-        // Manual bulk caching gives one hub read per loop.
-        hubs = hardwareMap.getAll(LynxModule.class);
 
-        for (LynxModule hub : hubs) {
-            hub.setBulkCachingMode(
-                    LynxModule.BulkCachingMode.MANUAL
-            );
-        }
+        // ---------------------------------------------------------------------
+        // Intake
+        // ---------------------------------------------------------------------
 
         intake = new Intake();
         intake.init(hardwareMap);
 
+
+        // ---------------------------------------------------------------------
+        // Outtake
+        // ---------------------------------------------------------------------
+
         outtake = new Outtake();
         outtake.init(hardwareMap);
 
-        brakes = new Brakes();
-        brakes.init(hardwareMap);
+
+        // ---------------------------------------------------------------------
+        // Alliance and turret
+        // ---------------------------------------------------------------------
+
+        applyAllianceFromPoseStorage();
+
+        /*
+         * Transfer the field coordinates into the Turret subsystem before
+         * calling turret.init().
+         *
+         * turret.init() selects the stored alliance target.
+         */
+        Turret.RED_GOAL_X = RED_GOAL_X;
+        Turret.RED_GOAL_Y = RED_GOAL_Y;
+
+        Turret.BLUE_GOAL_X = BLUE_GOAL_X;
+        Turret.BLUE_GOAL_Y = BLUE_GOAL_Y;
 
         turret = new Turret();
         turret.init(hardwareMap);
 
-        flower = new Flower();
-        flower.init(hardwareMap);
 
-        robotSettings = new RobotSettings();
-        robotSettings.init(hardwareMap);
+        // ---------------------------------------------------------------------
+        // Drivetrain
+        // ---------------------------------------------------------------------
 
-        // The turret's mechanical centre physically points backwards relative
-        // to the robot because TURRET_ZERO_OFFSET_DEG is 180 degrees.
+        frontRightMotor = hardwareMap.get(
+                DcMotor.class,
+                "frontRight"
+        );
+
+        frontLeftMotor = hardwareMap.get(
+                DcMotor.class,
+                "frontLeft"
+        );
+
+        backRightMotor = hardwareMap.get(
+                DcMotor.class,
+                "backRight"
+        );
+
+        backLeftMotor = hardwareMap.get(
+                DcMotor.class,
+                "backLeft"
+        );
+
+        frontRightMotor.setDirection(
+                DcMotorSimple.Direction.REVERSE
+        );
+
+        backRightMotor.setDirection(
+                DcMotorSimple.Direction.REVERSE
+        );
+
+        frontLeftMotor.setDirection(
+                DcMotorSimple.Direction.FORWARD
+        );
+
+        backLeftMotor.setDirection(
+                DcMotorSimple.Direction.FORWARD
+        );
+
+        frontRightMotor.setZeroPowerBehavior(
+                DcMotor.ZeroPowerBehavior.BRAKE
+        );
+
+        frontLeftMotor.setZeroPowerBehavior(
+                DcMotor.ZeroPowerBehavior.BRAKE
+        );
+
+        backRightMotor.setZeroPowerBehavior(
+                DcMotor.ZeroPowerBehavior.BRAKE
+        );
+
+        backLeftMotor.setZeroPowerBehavior(
+                DcMotor.ZeroPowerBehavior.BRAKE
+        );
+
+
+        // ---------------------------------------------------------------------
+        // Block servo
+        // ---------------------------------------------------------------------
+
+        blockServo = hardwareMap.get(
+                Servo.class,
+                "blockServo"
+        );
+
+        blockServo.setDirection(
+                Servo.Direction.FORWARD
+        );
+
+        blockServo.setPosition(
+                RobotConstants.blockClosePos
+        );
+
+
+        // ---------------------------------------------------------------------
+        // Initial turret state
+        // ---------------------------------------------------------------------
+
+        turret.selectAllianceGoal();
         turret.setCentre();
 
-//        led = hardwareMap.get(ServoImplEx.class, "disLed");
-//        led.setPwmRange(new PwmControl.PwmRange(500, 2500));
-//        led.setPwmEnable();
 
-
-        applyAllianceFromPoseStorage();
-
-        updateGoalFromHive();
-        updateTurretTargetFromTeleOpGoal();
-
-        // Leave this disabled until real field-frame velocity is calculated.
-        Turret.velocityCompensationActive = false;
+        // ---------------------------------------------------------------------
+        // Initial localization pose
+        // ---------------------------------------------------------------------
 
         if (PoseStorage.currentPose != null) {
 
@@ -194,16 +272,63 @@ public class IntakeTest extends OpMode {
 
         } else {
 
-            Pose resetPose = getTeleOpResetPose();
+            Pose resetPose =
+                    getTeleOpResetPose();
 
             follower.setPose(resetPose);
             PoseStorage.setPose(resetPose);
         }
 
-        autoAimMode = true;
 
+        limitIntakeSpeeds();
 
+        telemetry.addLine("Initialization complete");
+
+        telemetry.addData(
+                "Alliance",
+                allianceLabel
+        );
+
+        telemetry.addData(
+                "Selected Goal",
+                turret.getSelectedGoal()
+        );
+
+        telemetry.addData(
+                "Goal",
+                "(%.1f, %.1f)",
+                TELEOP_GOAL_X,
+                TELEOP_GOAL_Y
+        );
+
+        telemetry.update();
     }
+
+
+    // -------------------------------------------------------------------------
+    // Start
+    // -------------------------------------------------------------------------
+
+    @Override
+    public void start() {
+
+        /*
+         * Reapply the alliance in case PoseStorage was changed during the
+         * initialization period.
+         */
+        applyAllianceFromPoseStorage();
+
+        Turret.RED_GOAL_X = RED_GOAL_X;
+        Turret.RED_GOAL_Y = RED_GOAL_Y;
+
+        Turret.BLUE_GOAL_X = BLUE_GOAL_X;
+        Turret.BLUE_GOAL_Y = BLUE_GOAL_Y;
+
+        turret.selectAllianceGoal();
+
+        autoAimMode = true;
+    }
+
 
     // -------------------------------------------------------------------------
     // Main loop
@@ -212,62 +337,50 @@ public class IntakeTest extends OpMode {
     @Override
     public void loop() {
 
-        clearBulkCache();
+        /*
+         * Update Pedro Pathing before reading the current pose.
+         */
+        follower.update();
 
-        // Read subsystem controls.
         handleControls();
-        handleTurretModeControls();
+        handlePoseReset();
+        handleTurretControls();
 
-        // gamepad2 dpad left/right:
-        // Relocalise against the left or right field wall.
-        handleRelocalise();
-
-        // gamepad2 dpad down:
-        // Reset at Pedro's bottom-left field corner.
-        handleCornerPoseReset();
-
-        // Apply drive commands and update Pedro localization.
         driveRobot();
 
-        Pose currentPose = follower.pose();
-
-        if (currentPose != null) {
-            PoseStorage.setPose(currentPose);
-        }
-
-        // Update the selected HIVE target before aiming.
-        updateGoalFromHive();
-        updateTurretAim(currentPose);
-
-        //updateDistanceCheck(turret.getDistanceToTarget());
-
-        // Update shooter, feeder and hood controllers.
-        outtake.update();
-
         intake.update();
+        outtake.updatePF();
 
+        Pose currentPose =
+                follower.pose();
 
-        turret.updateCam();
+        PoseStorage.setPose(
+                currentPose
+        );
 
-        // Telemetry goes last so it shows the current loop's turret command.
-        displayTelemetry();
+        updateTurretAim(
+                currentPose
+        );
+
+        displayTelemetry(
+                currentPose
+        );
     }
 
+
     // -------------------------------------------------------------------------
-    // Main controls
+    // Mechanism controls
     // -------------------------------------------------------------------------
 
     private void handleControls() {
 
-        if (gamepad2.crossWasPressed()) {
-            RobotConstants.camAssist = !RobotConstants.camAssist;
-        }
-
-        // =====================================================================
-        // INTAKE AND FEEDER
-        // =====================================================================
-
-        boolean feederRun = false;
+        // ---------------------------------------------------------------------
+        // Intake
+        //
+        // Right bumper: collect
+        // Right trigger: open block, delay, then feed
+        // Left trigger: reverse intake
+        // ---------------------------------------------------------------------
 
         if (gamepad1.right_bumper) {
 
@@ -276,500 +389,338 @@ public class IntakeTest extends OpMode {
                     RobotConstants.BACK_INTAKE_SPEED
             );
 
-            robotSettings.block();
+            blockServo.setPosition(
+                    RobotConstants.blockClosePos
+            );
 
-            RobotConstants.timer = 0;
+            RobotConstants.timer = 0.0;
+            feedStartTimeMs = -1;
 
         } else if (gamepad1.right_trigger > 0.3) {
 
-            robotSettings.release();
+            blockServo.setPosition(
+                    RobotConstants.blockOpenPos
+            );
 
-            RobotConstants.timer += 0.1;
+            if (feedStartTimeMs < 0) {
 
-            if (RobotConstants.timer
-                    > RobotConstants.delayAmount) {
-
-                intake.intake(
-                        RobotConstants.FRONT_FEED_SPEED,
-                        RobotConstants.BACK_FEED_SPEED
-                );
-
-                feederRun = true;
+                feedStartTimeMs =
+                        System.currentTimeMillis();
             }
 
-        } else if (gamepad1.leftBumperWasPressed()) {
+            double feedElapsedSeconds =
+                    (System.currentTimeMillis()
+                            - feedStartTimeMs) / 1000.0;
+
+            RobotConstants.timer =
+                    feedElapsedSeconds;
+
+            if (feedElapsedSeconds
+                    >= RobotConstants.delayAmount) {
+
+                intake.intake(
+                        RobotConstants.FRONT_INTAKE_SPEED,
+                        RobotConstants.BACK_INTAKE_SPEED
+                );
+
+            } else {
+
+                intake.stopIntake();
+            }
+
+        } else if (gamepad1.left_trigger > 0.3) {
 
             intake.intake(
                     -RobotConstants.FRONT_INTAKE_SPEED,
                     -RobotConstants.BACK_INTAKE_SPEED
             );
 
+            blockServo.setPosition(
+                    RobotConstants.blockClosePos
+            );
+
+            RobotConstants.timer = 0.0;
+            feedStartTimeMs = -1;
+
         } else {
 
             intake.stopIntake();
 
-            robotSettings.block();
+            blockServo.setPosition(
+                    RobotConstants.blockClosePos
+            );
 
-            RobotConstants.timer = 0;
+            RobotConstants.timer = 0.0;
+            feedStartTimeMs = -1;
         }
 
-        outtake.setFeederTPS(
-                feederRun && feederAllowed()
-                        ? RobotConstants.FEEDER_TPS
-                        : 0.0
-        );
 
-        // =====================================================================
-        // OUTTAKE
-        // =====================================================================
+        // ---------------------------------------------------------------------
+        // Outtake
+        //
+        // Cross: start shooter
+        // Triangle: stop shooter
+        // ---------------------------------------------------------------------
 
-        // Intake returns the shooter to idle.
-        if (gamepad1.right_bumper) {
-            shooterActive = false;
-        }
-
-        // Triangle selects shooter idle.
-        if (gamepad1.triangle) {
-            shooterActive = false;
-        }
-
-        // Cross selects full shooting speed.
         if (gamepad1.cross) {
-            shooterActive = true;
+
+            outtake.setTargetTPS(
+                    RobotConstants.OUTTAKE_TPS
+            );
         }
 
-        double shootTPS =
-                RobotConstants.OUTTAKE_TPS;
+        if (gamepad1.triangle) {
 
-        double idleTPS =
-                shootTPS
-                        * Math.max(
-                        0.0,
-                        RobotConstants.IDLE_FRACTION
-                );
-
-        outtake.setTargetTPS(
-                shooterActive
-                        ? shootTPS
-                        : idleTPS
-        );
-
-        outtake.setHoodPosition(
-                RobotConstants.HOOD_POSITION
-        );
-
-        // =====================================================================
-        // BRAKES
-        // =====================================================================
-
-        if (gamepad1.dpad_up) {
-            brakes.liftBrakes();
-        }
-
-        if (gamepad1.dpad_down) {
-            brakes.lowerBrakes();
-        }
-
-        // ====================================================================
-        // FLOWER
-        // ====================================================================
-
-        if (gamepad1.dpadRightWasPressed()) {
-            FLOWER_ACTIVE = !FLOWER_ACTIVE;
-        }
-
-        if (FLOWER_ACTIVE) {
-            flower.flowerActivate(RobotConstants.flowerDropPos);
-        } else {
-                flower.flowerActivate(RobotConstants.flowerLiftPos);
+            outtake.stopOuttake();
         }
     }
 
+
     // -------------------------------------------------------------------------
-    // Turret mode controls
-    //
-    // gamepad1 square:
-    //     Enable automatic field-centric targeting.
-    //
-    // gamepad2 dpad up:
-    //     Disable automatic targeting and return turret to centre.
-    //
-    // gamepad2 Y:
-    //     Swap the active HIVE end.
+    // Turret controls
     // -------------------------------------------------------------------------
 
-    private void handleTurretModeControls() {
+    private void handleTurretControls() {
 
-        if (gamepad1.squareWasPressed()) {
+        /*
+         * Left bumper toggles automatic aiming.
+         *
+         * Reverse intake uses left trigger, avoiding a control conflict.
+         */
+        boolean currentAutoAimButton =
+                gamepad1.left_bumper;
 
-            autoAimMode = true;
+        if (currentAutoAimButton
+                && !previousAutoAimButton) {
 
-            updateGoalFromHive();
-            updateTurretTargetFromTeleOpGoal();
+            autoAimMode =
+                    !autoAimMode;
+
+            if (autoAimMode) {
+
+                /*
+                 * Select the stored alliance goal.
+                 *
+                 * This does not cycle to another goal.
+                 */
+                turret.selectAllianceGoal();
+
+            } else {
+
+                turret.setCentre();
+            }
         }
 
-        if (gamepad2.dpadUpWasPressed()) {
+        previousAutoAimButton =
+                currentAutoAimButton;
+
+
+        /*
+         * Square centres the turret at servo position 0.5.
+         *
+         * This disables auto aim but does not change the selected goal.
+         */
+        boolean currentCentreButton =
+                gamepad1.square;
+
+        if (currentCentreButton
+                && !previousCentreButton) {
 
             autoAimMode = false;
-
-            // The mechanical centre physically points backwards on this robot.
             turret.setCentre();
         }
 
-        if (gamepad2.yWasPressed()) {
+        previousCentreButton =
+                currentCentreButton;
+    }
 
-            hiveEndRight = !hiveEndRight;
 
-            updateGoalFromHive();
-            updateTurretTargetFromTeleOpGoal();
+    private void updateTurretAim(
+            Pose currentPose
+    ) {
+
+        if (autoAimMode) {
+
+            turret.aimTurret(
+                    currentPose,
+                    estimatedFieldVelocityX,
+                    estimatedFieldVelocityY
+            );
+
+        } else {
+
+            turret.setCentre();
         }
     }
 
+
     // -------------------------------------------------------------------------
-    // Feeder permission
+    // Pose reset
     // -------------------------------------------------------------------------
 
-    /**
-     * Returns whether the feeder motor may run.
-     */
-    private boolean feederAllowed() {
+    private void handlePoseReset() {
 
-        if (!RobotConstants.FEED_REQUIRES_SPEED) {
-            return true;
+        /*
+         * Options resets Pedro localization and restores auto aim.
+         */
+        boolean currentPoseResetButton =
+                gamepad1.options;
+
+        if (currentPoseResetButton
+                && !previousPoseResetButton) {
+
+            Pose resetPose =
+                    getTeleOpResetPose();
+
+            follower.setPose(resetPose);
+            PoseStorage.setPose(resetPose);
+
+            /*
+             * Re-select the correct alliance goal.
+             *
+             * This cannot switch to the opposing alliance goal.
+             */
+            turret.selectAllianceGoal();
+
+            autoAimMode = true;
         }
 
-        return shooterActive
-                && outtake.isAtSpeed(
-                RobotConstants.FEED_SPEED_TOLERANCE_TPS
-        );
+        previousPoseResetButton =
+                currentPoseResetButton;
     }
 
-    // -------------------------------------------------------------------------
-    // Bulk caching
-    // -------------------------------------------------------------------------
-
-    private void clearBulkCache() {
-
-        for (LynxModule hub : hubs) {
-            hub.clearBulkCache();
-        }
-    }
 
     // -------------------------------------------------------------------------
-    // Drive
+    // Drivetrain
     // -------------------------------------------------------------------------
 
     private void driveRobot() {
 
-        double strafeInput =
-                gamepad1.left_stick_x;
-
-        double turnInput =
-                gamepad1.right_stick_x;
-
-        if (CUBIC_STRAFE_TURN) {
-
-            strafeInput =
-                    Math.pow(strafeInput, 3);
-
-            turnInput =
-                    Math.pow(turnInput, 3);
-        }
-
         double forward =
-                FORWARD_SIGN
-                        * gamepad1.left_stick_y
+                gamepad1.left_stick_y
                         * RobotConstants.DRIVE_SPEED;
 
         double strafe =
-                STRAFE_SIGN
-                        * strafeInput
+                -gamepad1.left_stick_x
                         * RobotConstants.DRIVE_SPEED;
 
         double turn =
-                TURN_SIGN
-                        * turnInput
+                -gamepad1.right_stick_x
                         * RobotConstants.DRIVE_SPEED;
 
-        follower.manual(
-                new DrivePowers(
-                        forward,
-                        strafe,
-                        turn
-                )
+        double denominator =
+                Math.max(
+                        Math.abs(forward)
+                                + Math.abs(strafe)
+                                + Math.abs(turn),
+                        1.0
+                );
+
+        double frontLeftPower =
+                (forward + strafe + turn)
+                        / denominator;
+
+        double backLeftPower =
+                (forward - strafe + turn)
+                        / denominator;
+
+        double frontRightPower =
+                (forward - strafe - turn)
+                        / denominator;
+
+        double backRightPower =
+                (forward + strafe - turn)
+                        / denominator;
+
+        frontLeftMotor.setPower(
+                frontLeftPower
         );
 
-        follower.update();
-    }
+        frontRightMotor.setPower(
+                frontRightPower
+        );
 
-    private void updateDistanceCheck(double distance) {
-        if (distance > 100) {
-            led.setPosition(blue);
-        } else {
-            led.setPosition(red);
-        }
-    }
+        backLeftMotor.setPower(
+                backLeftPower
+        );
 
-    // -------------------------------------------------------------------------
-    // Pedro bottom-left corner reset
-    //
-    // gamepad2 dpad down
-    // -------------------------------------------------------------------------
-
-    private void handleCornerPoseReset() {
-
-        if (!gamepad2.dpadDownWasPressed()) {
-            return;
-        }
-
-        Pose resetPose =
-                getCornerResetPose();
-
-        follower.setPose(resetPose);
-        PoseStorage.setPose(resetPose);
-
-        updateGoalFromHive();
-        updateTurretTargetFromTeleOpGoal();
-
-        // This clears the turret's behind-target hold state.
-        turret.setCentre();
-
-        autoAimMode = true;
-    }
-
-    /**
-     * Returns the Pedro pose for the robot placed in the bottom-left field
-     * corner, with its localization point assumed to be at the robot's centre.
-     *
-     * Because the robot is approximately square, ROBOT_LENGTH_MM is used for
-     * both the X and Y wall offsets.
-     */
-    private Pose getCornerResetPose() {
-
-        double halfRobotIn =
-                RobotConstants.ROBOT_LENGTH_MM
-                        / 2.0
-                        / 25.4;
-
-        return p.of(
-                halfRobotIn,
-                halfRobotIn,
-                CORNER_RESET_HEADING_DEG
+        backRightMotor.setPower(
+                backRightPower
         );
     }
 
-    // -------------------------------------------------------------------------
-    // Wall relocalisation
-    //
-    // gamepad2 dpad left:
-    //     Robot is square against the left wall.
-    //
-    // gamepad2 dpad right:
-    //     Robot is square against the right wall.
-    // -------------------------------------------------------------------------
-
-    private void handleRelocalise() {
-
-        boolean leftWall =
-                gamepad2.dpadLeftWasPressed();
-
-        boolean rightWall =
-                gamepad2.dpadRightWasPressed();
-
-        if (!leftWall && !rightWall) {
-            return;
-        }
-
-        double halfLengthIn =
-                RobotConstants.ROBOT_LENGTH_MM
-                        / 25.4
-                        / 2.0;
-
-        // Facing from the left wall toward the field is heading 0 degrees.
-        // Facing from the right wall toward the field is heading 180 degrees.
-        double headingDeg =
-                leftWall
-                        ? 0.0
-                        : 180.0;
-
-        // Reverse the expected direction if the robot front is against the wall.
-        if (!RobotConstants.RESET_BACK_AGAINST_WALL) {
-            headingDeg += 180.0;
-        }
-
-        headingDeg =
-                normaliseDegrees0To360(headingDeg);
-
-        double x =
-                leftWall
-                        ? halfLengthIn
-                        : RobotConstants.FIELD_SIZE_IN - halfLengthIn;
-
-        Pose resetPose = p.of(
-                x,
-                hiveY(),
-                headingDeg
-        );
-
-        follower.setPose(resetPose);
-        PoseStorage.setPose(resetPose);
-
-        turret.setCentre();
-
-        updateGoalFromHive();
-        updateTurretTargetFromTeleOpGoal();
-
-        autoAimMode = true;
-    }
-
-    // -------------------------------------------------------------------------
-    // Turret aiming
-    // -------------------------------------------------------------------------
-
-    private void updateTurretAim(Pose currentPose) {
-
-        if (currentPose == null) {
-            return;
-        }
-
-        if (!autoAimMode) {
-            return;
-        }
-
-        turret.setTargetPose(
-                getTeleOpGoalPose()
-        );
-
-        // These velocity values remain zero until field-frame velocity is
-        // calculated. Turret.velocityCompensationActive is disabled in init().
-        turret.aimTurret(
-                currentPose,
-                estimatedFieldVelocityX,
-                estimatedFieldVelocityY
-        );
-    }
-
-    private void updateTurretTargetFromTeleOpGoal() {
-
-        turret.setTargetPose(
-                getTeleOpGoalPose()
-        );
-    }
-
-    private Pose getTeleOpGoalPose() {
-
-        return new Pose(
-                TELEOP_GOAL_X,
-                TELEOP_GOAL_Y,
-                0.0
-        );
-    }
-
-    // -------------------------------------------------------------------------
-    // HIVE target geometry
-    // -------------------------------------------------------------------------
-
-    /**
-     * Returns the Y coordinate of the current alliance's HIVE.
-     * An unknown alliance defaults to blue.
-     */
-    private double hiveY() {
-
-        boolean lowY =
-                PoseStorage.isRed()
-                        ? !RobotConstants.BLUE_IS_LOW_Y
-                        : RobotConstants.BLUE_IS_LOW_Y;
-
-        return RobotConstants.FIELD_CENTER
-                + (lowY ? -1.0 : 1.0)
-                * RobotConstants.HIVE_Y_OFFSET;
-    }
-
-    /**
-     * Sets the aiming point to the mouth of the upward CELL at the selected end
-     * of the current alliance's HIVE.
-     */
-    private void updateGoalFromHive() {
-
-        TELEOP_GOAL_X =
-                RobotConstants.FIELD_CENTER
-                        + (hiveEndRight ? 1.0 : -1.0)
-                        * RobotConstants.CELL_X_OFFSET;
-
-        TELEOP_GOAL_Y =
-                hiveY();
-    }
-
-    // -------------------------------------------------------------------------
-    // TeleOp fallback pose
-    // -------------------------------------------------------------------------
-
-    private Pose getTeleOpResetPose() {
-
-        return p.of(
-                TELEOP_RESET_X,
-                TELEOP_RESET_Y,
-                TELEOP_RESET_HEADING_DEG
-        );
-    }
-
-    // -------------------------------------------------------------------------
-    // Alliance selection
-    // -------------------------------------------------------------------------
-
-    private void applyAllianceFromPoseStorage() {
-
-        if (PoseStorage.isRed()) {
-
-            allianceLabel = "RED";
-
-            TELEOP_GOAL_X = RED_GOAL_X;
-            TELEOP_GOAL_Y = RED_GOAL_Y;
-
-            TELEOP_RESET_X = RED_RESET_X;
-            TELEOP_RESET_Y = RED_RESET_Y;
-            TELEOP_RESET_HEADING_DEG =
-                    RED_RESET_HEADING_DEG;
-
-            return;
-        }
-
-        if (PoseStorage.isBlue()) {
-
-            allianceLabel = "BLUE";
-
-            TELEOP_GOAL_X = BLUE_GOAL_X;
-            TELEOP_GOAL_Y = BLUE_GOAL_Y;
-
-            TELEOP_RESET_X = BLUE_RESET_X;
-            TELEOP_RESET_Y = BLUE_RESET_Y;
-            TELEOP_RESET_HEADING_DEG =
-                    BLUE_RESET_HEADING_DEG;
-
-            return;
-        }
-
-        allianceLabel =
-                "UNKNOWN - DEFAULT BLUE";
-
-        TELEOP_GOAL_X = BLUE_GOAL_X;
-        TELEOP_GOAL_Y = BLUE_GOAL_Y;
-
-        TELEOP_RESET_X = BLUE_RESET_X;
-        TELEOP_RESET_Y = BLUE_RESET_Y;
-        TELEOP_RESET_HEADING_DEG =
-                BLUE_RESET_HEADING_DEG;
-    }
 
     // -------------------------------------------------------------------------
     // Telemetry
     // -------------------------------------------------------------------------
 
-    private void displayTelemetry() {
+    private void displayTelemetry(
+            Pose currentPose
+    ) {
 
-        // =====================================================================
-        // OUTTAKE TARGETS
-        // =====================================================================
+        telemetry.addLine("=== ALLIANCE AND TARGET ===");
+
+        telemetry.addData(
+                "Alliance",
+                allianceLabel
+        );
+
+        telemetry.addData(
+                "Selected Goal",
+                turret.getSelectedGoal()
+        );
+
+        telemetry.addData(
+                "Goal X",
+                "%.1f",
+                turret.getTargetPose().x()
+        );
+
+        telemetry.addData(
+                "Goal Y",
+                "%.1f",
+                turret.getTargetPose().y()
+        );
+
+        telemetry.addData(
+                "Distance to Goal",
+                "%.1f cm",
+                turret.getDistanceToTarget() * 2.54
+        );
+
+
+        telemetry.addLine("=== TURRET ===");
+
+        telemetry.addData(
+                "Auto Aim",
+                autoAimMode
+        );
+
+        telemetry.addData(
+                "Servo Position",
+                "%.3f",
+                turret.getServoPosition()
+        );
+
+        telemetry.addData(
+                "Turret Angle",
+                "%.1f deg",
+                Turret.lastFinalAngleDeg
+        );
+
+        telemetry.addData(
+                "Relative Target Angle",
+                "%.1f deg",
+                Turret.lastRelativeAngleDeg
+        );
+
+        telemetry.addData(
+                "Holding At Limit",
+                turret.isHoldingBehind()
+        );
+
+
+        telemetry.addLine("=== OUTTAKE ===");
 
         telemetry.addData(
                 "Configured TPS",
@@ -777,27 +728,23 @@ public class IntakeTest extends OpMode {
         );
 
         telemetry.addData(
-                "Shooter Mode",
-                shooterActive ? "SHOOT" : "IDLE"
-        );
-
-        telemetry.addData(
                 "Active TPS",
                 outtake.getTargetTPS()
         );
 
-        // =====================================================================
-        // SHOOTER VELOCITY
-        // =====================================================================
-
         telemetry.addData(
-                "Current TPS filtered",
+                "Current TPS",
                 outtake.getCurrentTPS()
         );
 
         telemetry.addData(
-                "Raw TPS",
-                outtake.getRawTPS()
+                "Front TPS",
+                outtake.getFrontVelocityTPS()
+        );
+
+        telemetry.addData(
+                "Back TPS",
+                outtake.getBackVelocityTPS()
         );
 
         telemetry.addData(
@@ -812,100 +759,26 @@ public class IntakeTest extends OpMode {
 
         telemetry.addData(
                 "At Speed",
-                outtake.isAtSpeed(
-                        RobotConstants.AT_SPEED_TOLERANCE_TPS
-                )
-        );
-
-        // =====================================================================
-        // FEEDER
-        // =====================================================================
-
-        telemetry.addData(
-                "Feeder Target TPS",
-                outtake.getFeederTargetTPS()
+                outtake.isAtSpeed(50.0)
         );
 
         telemetry.addData(
-                "Feeder Current TPS",
-                outtake.getFeederCurrentTPS()
+                "kF",
+                Outtake.kF
         );
 
         telemetry.addData(
-                "Feeder Power",
-                outtake.getFeederCommandedPower()
+                "kP",
+                Outtake.kP
         );
 
         telemetry.addData(
-                "Feeder At Speed",
-                outtake.isFeederAtSpeed(
-                        RobotConstants.AT_SPEED_TOLERANCE_TPS
-                )
-        );
-
-        // =====================================================================
-        // HOOD
-        // =====================================================================
-
-        telemetry.addData(
-                "Hood Base",
-                outtake.getHoodBase()
-        );
-
-        telemetry.addData(
-                "Hood Compensation",
-                outtake.getHoodCompensation()
-        );
-
-        telemetry.addData(
-                "Hood Commanded",
-                outtake.getHoodPosition()
-        );
-
-        // =====================================================================
-        // VOLTAGE COMPENSATION
-        // =====================================================================
-
-        telemetry.addData(
-                "Battery Voltage filtered",
-                outtake.getVoltage()
-        );
-
-        telemetry.addData(
-                "Voltage Scale",
-                outtake.getVoltageScale()
-        );
-
-        // =====================================================================
-        // CONTROLLER CONSTANTS
-        // =====================================================================
-
-        telemetry.addData("kF", Outtake.kF);
-        telemetry.addData("kP", Outtake.kP);
-
-        telemetry.addData(
-                "Feeder kF",
-                Outtake.FEEDER_kF
-        );
-
-        telemetry.addData(
-                "Feeder kP",
-                Outtake.FEEDER_kP
-        );
-
-        telemetry.addData(
-                "Hood Comp Gain",
-                Outtake.HOOD_COMP_GAIN
-        );
-
-        telemetry.addData(
-                "Max Power",
+                "Maximum Power",
                 Outtake.MAX_POWER
         );
 
-        // =====================================================================
-        // INTAKE
-        // =====================================================================
+
+        telemetry.addLine("=== INTAKE ===");
 
         telemetry.addData(
                 "Front Intake Speed",
@@ -918,110 +791,170 @@ public class IntakeTest extends OpMode {
         );
 
         telemetry.addData(
-                "Timer",
+                "Ball Sensor",
+                Intake.sensorTriggered
+        );
+
+        telemetry.addData(
+                "Ball Confirmed",
+                Intake.ballConfirmed
+        );
+
+        telemetry.addData(
+                "Feed Timer",
+                "%.2f",
                 RobotConstants.timer
         );
 
-        // =====================================================================
-        // FIELD AND TURRET
-        // =====================================================================
+
+        telemetry.addLine("=== LOCALIZATION ===");
 
         telemetry.addData(
-                "Auto Aim",
-                autoAimMode
+                "Pose X",
+                "%.2f",
+                currentPose.x()
         );
 
         telemetry.addData(
-                "Alliance",
-                allianceLabel
+                "Pose Y",
+                "%.2f",
+                currentPose.y()
         );
 
         telemetry.addData(
-                "Hive End",
-                hiveEndRight
-                        ? "RIGHT (high x)"
-                        : "LEFT (low x)"
-        );
-
-        telemetry.addData(
-                "Goal",
-                "(%.1f, %.1f)",
-                TELEOP_GOAL_X,
-                TELEOP_GOAL_Y
-        );
-
-        telemetry.addData(
-                "Distance to goal",
-                "%.2f in",
-                turret.getDistanceToTarget()
-        );
-
-        telemetry.addData(
-                "Field target angle",
+                "Heading",
                 "%.1f deg",
-                Turret.lastFieldTargetAngleDeg
+                Math.toDegrees(
+                        currentPose.heading()
+                )
         );
-
-        telemetry.addData(
-                "Raw relative angle",
-                "%.1f deg",
-                Turret.lastRelativeAngleDeg
-        );
-
-        telemetry.addData(
-                "Commanded turret angle",
-                "%.1f deg",
-                Turret.lastFinalAngleDeg
-        );
-
-        telemetry.addData(
-                "Turret servo",
-                "%.3f",
-                Turret.lastServoPosition
-        );
-
-        telemetry.addData(
-                "Behind hold",
-                Turret.lastHoldingBehind
-        );
-
-        telemetry.addData(
-                "Hold side",
-                Turret.lastHoldSide > 0
-                        ? "POSITIVE LIMIT"
-                        : "NEGATIVE LIMIT"
-        );
-
-        telemetry.addData(
-                "Turret centre direction",
-                "%.1f deg from robot front",
-                Turret.TURRET_ZERO_OFFSET_DEG
-        );
-
-        telemetry.addData(
-                "Pose",
-                follower.pose()
-        );
-
-        telemetry.addData("SensorTriggered", Intake.sensorTriggered);
 
         telemetry.update();
     }
 
+
     // -------------------------------------------------------------------------
-    // Utilities
+    // Alliance configuration
     // -------------------------------------------------------------------------
 
-    private double normaliseDegrees0To360(double angleDeg) {
+    private void applyAllianceFromPoseStorage() {
 
-        angleDeg %= 360.0;
+        if (PoseStorage.isRed()) {
 
-        if (angleDeg < 0.0) {
-            angleDeg += 360.0;
+            allianceLabel = "RED";
+
+            TELEOP_GOAL_X =
+                    RED_GOAL_X;
+
+            TELEOP_GOAL_Y =
+                    RED_GOAL_Y;
+
+            TELEOP_RESET_X =
+                    RED_RESET_X;
+
+            TELEOP_RESET_Y =
+                    RED_RESET_Y;
+
+            TELEOP_RESET_HEADING_DEG =
+                    RED_RESET_HEADING_DEG;
+
+            return;
         }
 
-        return angleDeg;
+        if (PoseStorage.isBlue()) {
+
+            allianceLabel = "BLUE";
+
+            TELEOP_GOAL_X =
+                    BLUE_GOAL_X;
+
+            TELEOP_GOAL_Y =
+                    BLUE_GOAL_Y;
+
+            TELEOP_RESET_X =
+                    BLUE_RESET_X;
+
+            TELEOP_RESET_Y =
+                    BLUE_RESET_Y;
+
+            TELEOP_RESET_HEADING_DEG =
+                    BLUE_RESET_HEADING_DEG;
+
+            return;
+        }
+
+        /*
+         * Default to blue when the alliance has not been stored.
+         */
+        allianceLabel =
+                "UNKNOWN, DEFAULT BLUE";
+
+        TELEOP_GOAL_X =
+                BLUE_GOAL_X;
+
+        TELEOP_GOAL_Y =
+                BLUE_GOAL_Y;
+
+        TELEOP_RESET_X =
+                BLUE_RESET_X;
+
+        TELEOP_RESET_Y =
+                BLUE_RESET_Y;
+
+        TELEOP_RESET_HEADING_DEG =
+                BLUE_RESET_HEADING_DEG;
     }
+
+
+    private Pose getTeleOpResetPose() {
+
+        return new Pose(
+                TELEOP_RESET_X,
+                TELEOP_RESET_Y,
+                Math.toRadians(
+                        TELEOP_RESET_HEADING_DEG
+                )
+        );
+    }
+
+
+    // -------------------------------------------------------------------------
+    // Utility methods
+    // -------------------------------------------------------------------------
+
+    private void limitIntakeSpeeds() {
+
+        RobotConstants.FRONT_INTAKE_SPEED =
+                clip(
+                        RobotConstants.FRONT_INTAKE_SPEED,
+                        -1.0,
+                        1.0
+                );
+
+        RobotConstants.BACK_INTAKE_SPEED =
+                clip(
+                        RobotConstants.BACK_INTAKE_SPEED,
+                        -1.0,
+                        1.0
+                );
+    }
+
+
+    private double clip(
+            double value,
+            double minimum,
+            double maximum
+    ) {
+
+        return Math.max(
+                minimum,
+                Math.min(
+                        maximum,
+                        value
+                )
+        );
+    }
+
 
     // -------------------------------------------------------------------------
     // Stop
@@ -1038,21 +971,27 @@ public class IntakeTest extends OpMode {
             intake.stopIntake();
         }
 
-        if (turret != null) {
-            turret.setCentre();
+        if (frontLeftMotor != null) {
+            frontLeftMotor.setPower(0.0);
         }
 
-        if (follower != null) {
+        if (frontRightMotor != null) {
+            frontRightMotor.setPower(0.0);
+        }
 
-            follower.manual(
-                    new DrivePowers(
-                            0.0,
-                            0.0,
-                            0.0
-                    )
+        if (backLeftMotor != null) {
+            backLeftMotor.setPower(0.0);
+        }
+
+        if (backRightMotor != null) {
+            backRightMotor.setPower(0.0);
+        }
+
+        if (blockServo != null) {
+
+            blockServo.setPosition(
+                    RobotConstants.blockClosePos
             );
-
-            follower.update();
         }
     }
 }
