@@ -9,157 +9,124 @@ import com.qualcomm.robotcore.hardware.Servo;
 import com.qualcomm.robotcore.hardware.VoltageSensor;
 
 /**
- * Outtake subsystem containing:
+ * Shooter, feeder and variable hood subsystem.
  *
- * 1. One shooter motor
- * 2. One feeder motor
- * 3. One hood servo
+ * Optional distance models:
  *
- * The shooter and feeder use independent PF velocity controllers.
- * Motor velocity is measured in encoder ticks per second.
+ * TPS = TPS_INTERCEPT + TPS_SLOPE * distance
+ * hood = HOOD_INTERCEPT + HOOD_SLOPE * distance
  *
- * The hood holds a configurable base position and can optionally apply
- * a small correction based on normalized shooter velocity error.
+ * Distance units are inches.
+ *
+ * A positive setTargetTPS() command requests shooter operation.
+ * Zero stops the shooter regardless of regression configuration.
+ *
+ * Call update() once per OpMode loop.
  */
 @Configurable
 public class Outtake {
 
-    // -------------------------------------------------------------------------
-    // FTC Robot Configuration names
-    // -------------------------------------------------------------------------
+    // ---------------------------------------------------------------------
+    // Hardware
+    // ---------------------------------------------------------------------
 
-    public static String SHOOTER_MOTOR_NAME =
-            "shooterMotor1";
-
-    public static String FEEDER_MOTOR_NAME =
-            "shooterMotor";
-
-    public static String HOOD_SERVO_NAME =
-            "hoodServo";
-
-
-    // -------------------------------------------------------------------------
-    // Motor directions
-    // -------------------------------------------------------------------------
+    public static String SHOOTER_MOTOR_NAME = "shooterMotor1";
+    public static String FEEDER_MOTOR_NAME = "shooterMotor";
+    public static String HOOD_SERVO_NAME = "hoodServo";
 
     public static boolean SHOOTER_REVERSED = true;
     public static boolean FEEDER_REVERSED = true;
 
-
-    // -------------------------------------------------------------------------
+    // ---------------------------------------------------------------------
     // Shooter PF tuning
-    // -------------------------------------------------------------------------
-    // Units are encoder ticks per second.
-    // -------------------------------------------------------------------------
+    // ---------------------------------------------------------------------
 
     public static double kF = 0.00045;
     public static double kP = 0.03;
 
-
-    // -------------------------------------------------------------------------
+    // ---------------------------------------------------------------------
     // Feeder PF tuning
-    // -------------------------------------------------------------------------
+    // ---------------------------------------------------------------------
 
     public static double FEEDER_kF = 0.00045;
     public static double FEEDER_kP = 0.01;
 
-
-    // -------------------------------------------------------------------------
-    // Motor limits
-    // -------------------------------------------------------------------------
+    // ---------------------------------------------------------------------
+    // Motor limits and filtering
+    // ---------------------------------------------------------------------
 
     public static double MAX_POWER = 1.0;
 
-
-    // -------------------------------------------------------------------------
-    // Velocity filtering
-    //
     // 1.0 means no filtering.
-    // Smaller values provide more smoothing but add more delay.
-    // -------------------------------------------------------------------------
-
     public static double VELOCITY_FILTER_ALPHA = 0.15;
 
-
-    // -------------------------------------------------------------------------
+    // ---------------------------------------------------------------------
     // Voltage compensation
-    //
-    // kF should be tuned at NOMINAL_VOLTAGE.
-    // -------------------------------------------------------------------------
+    // ---------------------------------------------------------------------
 
     public static boolean VOLTAGE_COMP_ENABLED = true;
 
     public static double NOMINAL_VOLTAGE = 13.2;
-
     public static double VOLTAGE_FILTER_ALPHA = 0.1;
 
     public static double MIN_VOLTAGE = 9.0;
     public static double MAX_VOLTAGE = 14.5;
 
-
-    // -------------------------------------------------------------------------
-    // Hood servo calibration
-    // -------------------------------------------------------------------------
+    // ---------------------------------------------------------------------
+    // Hood calibration
+    // ---------------------------------------------------------------------
 
     public static double HOOD_HOME = 0.5;
 
     public static double HOOD_MIN = 0.4;
     public static double HOOD_MAX = 0.8;
 
-
-    // -------------------------------------------------------------------------
-    // Hood velocity compensation
-    //
-    // Compensation is based on normalized shooter velocity error:
-    //
-    // normalizedError =
-    //     errorBeyondDeadband / targetTPS
-    //
-    // hoodCorrection =
-    //     HOOD_COMP_GAIN * normalizedError
-    //
-    // This prevents a raw TPS error from immediately saturating the servo.
-    // -------------------------------------------------------------------------
-
-    public static boolean HOOD_COMP_ENABLED = true;
-
-    /*
-     * Servo correction applied for a normalized speed error of 1.0.
-     *
-     * Positive values decrease the hood position when the shooter is below
-     * speed. Change this to a negative value if the physical hood needs to
-     * move in the opposite direction.
-     */
-    public static double HOOD_COMP_GAIN = 0.05;
-
-    /*
-     * Ignore shooter velocity error inside this range.
-     */
-    public static double HOOD_COMP_DEADBAND_TPS = 50.0;
-
-    /*
-     * Maximum correction from the configured hood base position.
-     */
-    public static double HOOD_COMP_MAX = 0.08;
-
-    /*
-     * Skip very small servo changes to reduce jitter.
-     */
     public static double HOOD_MIN_STEP = 0.002;
 
+    // ---------------------------------------------------------------------
+    // Hood velocity compensation
+    //
+    // Disable while calibrating the distance models.
+    // ---------------------------------------------------------------------
 
-    // -------------------------------------------------------------------------
-    // Individual PF motor loop
-    // -------------------------------------------------------------------------
+    public static boolean HOOD_COMP_ENABLED = false;
+
+    public static double HOOD_COMP_GAIN = 0.05;
+    public static double HOOD_COMP_DEADBAND_TPS = 50.0;
+    public static double HOOD_COMP_MAX = 0.08;
+
+    // ---------------------------------------------------------------------
+    // Distance regression
+    //
+    // Initial intercepts reproduce the existing fixed shot.
+    // Slopes and tested range must be calibrated.
+    // ---------------------------------------------------------------------
+
+    public static boolean DISTANCE_REGRESSION_ENABLED = false;
+
+    public static double TPS_SLOPE = 0.0;
+    public static double TPS_INTERCEPT = 1950.0;
+
+    public static double HOOD_SLOPE = 0.0;
+    public static double HOOD_INTERCEPT = 0.60;
+
+    // Equal defaults intentionally prevent regression activation.
+    public static double SHOT_DISTANCE_MIN = 0.0;
+    public static double SHOT_DISTANCE_MAX = 0.0;
+
+    // Regression-only cap, not a verified hardware maximum.
+    public static double REGRESSION_MAX_TPS = 2100.0;
+
+    public static double DISTANCE_TIMEOUT_SECONDS = 0.5;
+
+    // ---------------------------------------------------------------------
+    // Individual motor controller
+    // ---------------------------------------------------------------------
 
     private static class Loop {
 
         private final DcMotorEx motor;
 
-        /*
-         * Target may be signed.
-         * A negative feeder target can be used for unjamming.
-         */
         private double targetTPS = 0.0;
 
         private double rawTPS = 0.0;
@@ -168,120 +135,117 @@ public class Outtake {
         private double power = 0.0;
 
         private boolean primed = false;
-
+        private boolean controllerValid = false;
 
         Loop(DcMotorEx motor) {
             this.motor = motor;
         }
-
 
         void update(
                 double loopKF,
                 double loopKP,
                 double voltageScale
         ) {
+            controllerValid = false;
 
-            rawTPS =
-                    Math.abs(
-                            motor.getVelocity()
-                    );
+            rawTPS = Math.abs(motor.getVelocity());
 
-            /*
-             * Prime the filter with the first valid reading so it does not
-             * slowly rise from zero at startup.
-             */
-            if (!primed) {
-
-                currentTPS = rawTPS;
-                primed = true;
-
-            } else {
-
-                double alpha =
-                        clampStatic(
-                                VELOCITY_FILTER_ALPHA,
-                                0.0,
-                                1.0
-                        );
-
-                currentTPS +=
-                        alpha
-                                * (rawTPS - currentTPS);
-            }
-
-            double wantedTPS =
-                    Math.abs(targetTPS);
-
-            if (wantedTPS <= 0.0) {
-
+            if (!Double.isFinite(rawTPS)) {
+                primed = false;
+                currentTPS = 0.0;
                 errorTPS = 0.0;
-                power = 0.0;
-
-                motor.setPower(0.0);
+                commandZero();
                 return;
             }
 
-            errorTPS =
-                    wantedTPS - currentTPS;
+            if (!primed) {
+                currentTPS = rawTPS;
+                primed = true;
+            } else {
+                double alpha = Double.isFinite(
+                        VELOCITY_FILTER_ALPHA
+                )
+                        ? clamp(
+                        VELOCITY_FILTER_ALPHA,
+                        0.0,
+                        1.0
+                )
+                        : 1.0;
+
+                currentTPS += alpha * (rawTPS - currentTPS);
+            }
+
+            double wantedTPS = Math.abs(targetTPS);
+
+            if (!Double.isFinite(wantedTPS)
+                    || wantedTPS <= 0.0) {
+                errorTPS = 0.0;
+                commandZero();
+                return;
+            }
+
+            errorTPS = wantedTPS - currentTPS;
 
             double calculatedPower =
-                    loopKF
-                            * wantedTPS
-                            * voltageScale
-                            + loopKP
-                            * errorTPS;
+                    loopKF * wantedTPS * voltageScale
+                            + loopKP * errorTPS;
 
-            /*
-             * Shooter/feeder magnitude is kept positive, then the requested
-             * target sign determines motor direction.
-             */
-            calculatedPower =
-                    clampStatic(
-                            calculatedPower,
-                            0.0,
-                            MAX_POWER
-                    );
+            if (!Double.isFinite(calculatedPower)
+                    || !Double.isFinite(MAX_POWER)) {
+                commandZero();
+                return;
+            }
 
-            power =
-                    Math.signum(targetTPS)
-                            * calculatedPower;
+            double limit = clamp(MAX_POWER, 0.0, 1.0);
+
+            calculatedPower = clamp(
+                    calculatedPower,
+                    0.0,
+                    limit
+            );
+
+            power = Math.signum(targetTPS) * calculatedPower;
 
             motor.setPower(power);
+            controllerValid = true;
         }
 
+        private void commandZero() {
+            power = 0.0;
+            motor.setPower(0.0);
+        }
 
         void stop() {
-
             targetTPS = 0.0;
-
             rawTPS = 0.0;
             currentTPS = 0.0;
             errorTPS = 0.0;
             power = 0.0;
 
             primed = false;
+            controllerValid = false;
 
             motor.setPower(0.0);
         }
 
-
         boolean atSpeed(double toleranceTPS) {
-
-            return targetTPS != 0.0
-                    && Math.abs(errorTPS)
-                    <= Math.abs(toleranceTPS);
+            return primed
+                    && controllerValid
+                    && targetTPS != 0.0
+                    && Double.isFinite(toleranceTPS)
+                    && Math.abs(
+                    Math.abs(targetTPS) - currentTPS
+            ) <= Math.abs(toleranceTPS);
         }
-
 
         double getMotorPower() {
             return motor.getPower();
         }
     }
 
-
-    // -------------------------------------------------------------------------
-    // Hardware and controllers
-    // -------------------------------------------------------------------------
+    // ---------------------------------------------------------------------
+    // Hardware and controller state
+    // ---------------------------------------------------------------------
 
     private Loop shooter;
     private Loop feeder;
@@ -289,49 +253,43 @@ public class Outtake {
     private Servo hood;
     private VoltageSensor voltageSensor;
 
-
-    // -------------------------------------------------------------------------
-    // Voltage state
-    // -------------------------------------------------------------------------
-
     private double filteredVoltage = 0.0;
     private double voltageScale = 1.0;
-
     private boolean voltagePrimed = false;
 
-
-    // -------------------------------------------------------------------------
-    // Hood state
-    // -------------------------------------------------------------------------
-
     private double hoodBase = HOOD_HOME;
-    private double hoodCompensation = 0.0;
+    private double fixedHoodBase = HOOD_HOME;
     private double hoodCommanded = HOOD_HOME;
+    private double hoodCompensation = 0.0;
 
+    private double fixedTargetTPS = 0.0;
 
-    // -------------------------------------------------------------------------
+    private double goalDistance = Double.NaN;
+    private long distanceUpdatedNanos = 0L;
+    private boolean distanceReceived = false;
+
+    private boolean usingDistanceRegression = false;
+
+    // ---------------------------------------------------------------------
     // Initialization
-    // -------------------------------------------------------------------------
+    // ---------------------------------------------------------------------
 
     public void init(HardwareMap hardwareMap) {
 
-        DcMotorEx shooterMotor =
-                hardwareMap.get(
-                        DcMotorEx.class,
-                        SHOOTER_MOTOR_NAME
-                );
+        DcMotorEx shooterMotor = hardwareMap.get(
+                DcMotorEx.class,
+                SHOOTER_MOTOR_NAME
+        );
 
-        DcMotorEx feederMotor =
-                hardwareMap.get(
-                        DcMotorEx.class,
-                        FEEDER_MOTOR_NAME
-                );
+        DcMotorEx feederMotor = hardwareMap.get(
+                DcMotorEx.class,
+                FEEDER_MOTOR_NAME
+        );
 
-        hood =
-                hardwareMap.get(
-                        Servo.class,
-                        HOOD_SERVO_NAME
-                );
+        hood = hardwareMap.get(
+                Servo.class,
+                HOOD_SERVO_NAME
+        );
 
         shooterMotor.setDirection(
                 SHOOTER_REVERSED
@@ -353,10 +311,6 @@ public class Outtake {
                 DcMotor.ZeroPowerBehavior.FLOAT
         );
 
-        /*
-         * Motor power is calculated by this subsystem.
-         * Encoder velocity remains available through getVelocity().
-         */
         shooterMotor.setMode(
                 DcMotor.RunMode.RUN_WITHOUT_ENCODER
         );
@@ -365,139 +319,189 @@ public class Outtake {
                 DcMotor.RunMode.RUN_WITHOUT_ENCODER
         );
 
-        shooter =
-                new Loop(shooterMotor);
+        shooter = new Loop(shooterMotor);
+        feeder = new Loop(feederMotor);
 
-        feeder =
-                new Loop(feederMotor);
-
-        /*
-         * Use the first available Control Hub or Expansion Hub voltage sensor.
-         */
         voltageSensor = null;
 
-        for (VoltageSensor sensor
-                : hardwareMap.voltageSensor) {
-
+        for (VoltageSensor sensor : hardwareMap.voltageSensor) {
             if (sensor != null) {
-
                 voltageSensor = sensor;
                 break;
             }
         }
 
-        hoodBase =
-                clampHood(HOOD_HOME);
+        double home = Double.isFinite(HOOD_HOME)
+                ? HOOD_HOME
+                : 0.5;
 
-        hoodCompensation = 0.0;
+        hoodBase = clampHood(home);
+        fixedHoodBase = hoodBase;
         hoodCommanded = hoodBase;
+        hoodCompensation = 0.0;
 
-        hood.setPosition(
-                hoodCommanded
-        );
+        hood.setPosition(hoodCommanded);
 
         stopOuttake();
     }
 
-
-    // -------------------------------------------------------------------------
+    // ---------------------------------------------------------------------
     // Shooter commands
-    // -------------------------------------------------------------------------
+    // ---------------------------------------------------------------------
 
     /**
-     * Sets the shooter target in encoder ticks per second.
+     * Stores the fixed fallback TPS and requests shooter operation.
+     *
+     * A positive target enables shooting.
+     * Zero disables shooting even when regression is enabled.
      */
     public void setTargetTPS(double targetTPS) {
 
-        if (shooter == null) {
-            return;
-        }
+        fixedTargetTPS = Double.isFinite(targetTPS)
+                ? Math.max(0.0, targetTPS)
+                : 0.0;
 
-        shooter.targetTPS =
-                Math.max(
-                        0.0,
-                        targetTPS
-                );
+        usingDistanceRegression = false;
+
+        if (shooter != null) {
+            shooter.targetTPS = fixedTargetTPS;
+        }
     }
 
-
-    // -------------------------------------------------------------------------
-    // Feeder commands
-    // -------------------------------------------------------------------------
+    // ---------------------------------------------------------------------
+    // Distance input and target selection
+    // ---------------------------------------------------------------------
 
     /**
-     * Sets the feeder target in encoder ticks per second.
+     * Refresh every loop with the current selected-goal distance.
+     * Units: inches.
      *
-     * Positive runs in the configured forward direction.
-     * Negative may be used for unjamming.
+     * Pass Double.NaN when unavailable.
+     * This method does not start the shooter.
      */
-    public void setFeederTPS(double targetTPS) {
+    public void setGoalDistance(double distance) {
+        goalDistance = distance;
+        distanceUpdatedNanos = System.nanoTime();
+        distanceReceived = true;
+    }
 
-        if (feeder == null) {
+    private void updateShotTargets() {
+
+        usingDistanceRegression = false;
+
+        shooter.targetTPS = fixedTargetTPS;
+
+        if (fixedTargetTPS <= 0.0) {
             return;
         }
 
-        feeder.targetTPS =
-                targetTPS;
+        hoodBase = clampHood(fixedHoodBase);
+
+        if (!DISTANCE_REGRESSION_ENABLED || !distanceReceived) {
+            return;
+        }
+
+        double ageSeconds =
+                (System.nanoTime() - distanceUpdatedNanos)
+                        / 1_000_000_000.0;
+
+        if (!Double.isFinite(goalDistance)
+                || goalDistance < 0.0
+                || !Double.isFinite(DISTANCE_TIMEOUT_SECONDS)
+                || DISTANCE_TIMEOUT_SECONDS <= 0.0
+                || ageSeconds > DISTANCE_TIMEOUT_SECONDS
+                || !Double.isFinite(SHOT_DISTANCE_MIN)
+                || !Double.isFinite(SHOT_DISTANCE_MAX)
+                || SHOT_DISTANCE_MIN < 0.0
+                || SHOT_DISTANCE_MAX <= SHOT_DISTANCE_MIN
+                || goalDistance < SHOT_DISTANCE_MIN
+                || goalDistance > SHOT_DISTANCE_MAX) {
+            return;
+        }
+
+        double predictedTPS =
+                TPS_INTERCEPT + TPS_SLOPE * goalDistance;
+
+        double predictedHood =
+                HOOD_INTERCEPT + HOOD_SLOPE * goalDistance;
+
+        if (!Double.isFinite(predictedTPS)
+                || predictedTPS <= 0.0
+                || !Double.isFinite(predictedHood)
+                || !Double.isFinite(REGRESSION_MAX_TPS)
+                || REGRESSION_MAX_TPS <= 0.0) {
+            return;
+        }
+
+        shooter.targetTPS = Math.min(
+                predictedTPS,
+                REGRESSION_MAX_TPS
+        );
+
+        hoodBase = clampHood(predictedHood);
+        usingDistanceRegression = true;
     }
 
+    // ---------------------------------------------------------------------
+    // Feeder commands
+    // ---------------------------------------------------------------------
+
+    /**
+     * Positive runs forward.
+     * Negative can be used for unjamming.
+     */
+    public void setFeederTPS(double targetTPS) {
+        if (feeder != null) {
+            feeder.targetTPS = Double.isFinite(targetTPS)
+                    ? targetTPS
+                    : 0.0;
+        }
+    }
 
     public void stopFeeder() {
-
         if (feeder != null) {
             feeder.stop();
         }
     }
 
-
-    // -------------------------------------------------------------------------
+    // ---------------------------------------------------------------------
     // Hood commands
-    // -------------------------------------------------------------------------
+    // ---------------------------------------------------------------------
 
     /**
-     * Sets the hood base position.
-     *
-     * Velocity compensation is added to this position during update().
+     * Stores the fixed fallback hood position.
+     * Valid distance regression overrides it during update().
      */
     public void setHoodPosition(double position) {
 
-        hoodBase =
-                clampHood(position);
+        if (!Double.isFinite(position)) {
+            return;
+        }
 
-        /*
-         * If the shooter is stopped, apply the new base immediately.
-         */
-        if (shooter == null
-                || shooter.targetTPS <= 0.0) {
+        fixedHoodBase = clampHood(position);
+        hoodBase = fixedHoodBase;
 
-            setHoodServoPosition(
-                    hoodBase
-            );
+        if (shooter == null || shooter.targetTPS <= 0.0) {
+            setHoodServoPosition(hoodBase);
         }
     }
 
-
-    /**
-     * Returns the hood to its configured home position.
-     */
     public void setHoodHome() {
-
-        setHoodPosition(
-                HOOD_HOME
-        );
+        setHoodPosition(HOOD_HOME);
     }
 
+    // ---------------------------------------------------------------------
+    // Stop and update
+    // ---------------------------------------------------------------------
 
-    // -------------------------------------------------------------------------
-    // Stop
-    // -------------------------------------------------------------------------
-
-    /**
-     * Stops the shooter and feeder.
-     *
-     * The hood remains at its last commanded position.
-     */
     public void stopOuttake() {
+
+        fixedTargetTPS = 0.0;
+        usingDistanceRegression = false;
+
+        goalDistance = Double.NaN;
+        distanceReceived = false;
+        distanceUpdatedNanos = 0L;
 
         if (shooter != null) {
             shooter.stop();
@@ -510,34 +514,20 @@ public class Outtake {
         voltagePrimed = false;
         voltageScale = 1.0;
 
+        hoodBase = hoodCommanded;
         hoodCompensation = 0.0;
     }
 
-
-    // -------------------------------------------------------------------------
-    // Periodic update
-    // -------------------------------------------------------------------------
-
-    /**
-     * Updates the shooter, feeder, voltage compensation and hood.
-     *
-     * Call this once during every OpMode loop.
-     */
     public void update() {
 
-        if (shooter == null
-                || feeder == null) {
-
+        if (shooter == null || feeder == null) {
             return;
         }
 
+        updateShotTargets();
         updateVoltageScale();
 
-        shooter.update(
-                kF,
-                kP,
-                voltageScale
-        );
+        shooter.update(kF, kP, voltageScale);
 
         feeder.update(
                 FEEDER_kF,
@@ -548,18 +538,17 @@ public class Outtake {
         updateHood();
     }
 
-
     /**
-     * Compatibility method for existing OpModes.
+     * Compatibility alias.
+     * Call update() OR updatePF(), not both in one loop.
      */
     public void updatePF() {
         update();
     }
 
-
-    // -------------------------------------------------------------------------
-    // Corrected hood compensation
-    // -------------------------------------------------------------------------
+    // ---------------------------------------------------------------------
+    // Hood compensation
+    // ---------------------------------------------------------------------
 
     private void updateHood() {
 
@@ -571,439 +560,245 @@ public class Outtake {
 
         if (HOOD_COMP_ENABLED
                 && shooter != null
-                && shooter.targetTPS > 0.0) {
+                && shooter.controllerValid
+                && shooter.targetTPS > 0.0
+                && Double.isFinite(HOOD_COMP_GAIN)
+                && Double.isFinite(HOOD_COMP_DEADBAND_TPS)
+                && Double.isFinite(HOOD_COMP_MAX)) {
 
-            double targetTPS =
-                    Math.abs(
-                            shooter.targetTPS
-                    );
+            double targetTPS = shooter.targetTPS;
 
-            double currentTPS =
-                    shooter.currentTPS;
-
-            /*
-             * Positive error means shooter is above target.
-             * Negative error means shooter is below target.
-             */
             double errorTPS =
-                    currentTPS - targetTPS;
+                    shooter.currentTPS - targetTPS;
 
-            if (Math.abs(errorTPS)
-                    > HOOD_COMP_DEADBAND_TPS) {
+            double deadband =
+                    Math.abs(HOOD_COMP_DEADBAND_TPS);
 
-                /*
-                 * Remove the deadband so compensation begins smoothly at zero.
-                 */
-                double errorBeyondDeadband =
+            if (Math.abs(errorTPS) > deadband) {
+
+                double beyondDeadband =
                         Math.signum(errorTPS)
-                                * (
-                                Math.abs(errorTPS)
-                                        - HOOD_COMP_DEADBAND_TPS
-                        );
+                                * (Math.abs(errorTPS) - deadband);
 
-                /*
-                 * Normalize to a fraction of the target speed.
-                 *
-                 * This prevents raw TPS values from creating excessive servo
-                 * corrections.
-                 */
                 double normalizedError =
-                        errorBeyondDeadband
-                                / Math.max(
-                                1.0,
-                                targetTPS
-                        );
+                        beyondDeadband / Math.max(1.0, targetTPS);
 
-                hoodCompensation =
-                        HOOD_COMP_GAIN
-                                * normalizedError;
-
-                hoodCompensation =
-                        clamp(
-                                hoodCompensation,
-                                -Math.abs(HOOD_COMP_MAX),
-                                Math.abs(HOOD_COMP_MAX)
-                        );
+                hoodCompensation = clamp(
+                        HOOD_COMP_GAIN * normalizedError,
+                        -Math.abs(HOOD_COMP_MAX),
+                        Math.abs(HOOD_COMP_MAX)
+                );
             }
         }
 
-        double requestedPosition =
-                clampHood(
-                        hoodBase
-                                + hoodCompensation
-                );
-
         setHoodServoPosition(
-                requestedPosition
+                hoodBase + hoodCompensation
         );
     }
 
+    private void setHoodServoPosition(double position) {
 
-    private void setHoodServoPosition(
-            double position
-    ) {
-
-        if (hood == null) {
+        if (hood == null || !Double.isFinite(position)) {
             return;
         }
 
-        double clippedPosition =
-                clampHood(position);
+        double clipped = clampHood(position);
 
-        if (Math.abs(
-                clippedPosition
-                        - hoodCommanded
-        ) >= Math.abs(HOOD_MIN_STEP)) {
+        double minimumStep = Double.isFinite(HOOD_MIN_STEP)
+                ? Math.abs(HOOD_MIN_STEP)
+                : 0.0;
 
-            hood.setPosition(
-                    clippedPosition
-            );
+        boolean outsideLimits =
+                hoodCommanded != clampHood(hoodCommanded);
 
-            hoodCommanded =
-                    clippedPosition;
+        if (outsideLimits
+                || Math.abs(clipped - hoodCommanded) >= minimumStep) {
+
+            hood.setPosition(clipped);
+            hoodCommanded = clipped;
         }
     }
 
+    private double clampHood(double position) {
 
-    private double clampHood(
-            double position
-    ) {
+        double first = Double.isFinite(HOOD_MIN)
+                ? clamp(HOOD_MIN, 0.0, 1.0)
+                : 0.4;
 
-        double minimum =
-                Math.min(
-                        HOOD_MIN,
-                        HOOD_MAX
-                );
-
-        double maximum =
-                Math.max(
-                        HOOD_MIN,
-                        HOOD_MAX
-                );
+        double second = Double.isFinite(HOOD_MAX)
+                ? clamp(HOOD_MAX, 0.0, 1.0)
+                : 0.8;
 
         return clamp(
                 position,
-                minimum,
-                maximum
+                Math.min(first, second),
+                Math.max(first, second)
         );
     }
 
-
-    // -------------------------------------------------------------------------
+    // ---------------------------------------------------------------------
     // Voltage compensation
-    // -------------------------------------------------------------------------
+    // ---------------------------------------------------------------------
 
     private void updateVoltageScale() {
 
-        if (!VOLTAGE_COMP_ENABLED
-                || voltageSensor == null) {
-
+        if (!VOLTAGE_COMP_ENABLED || voltageSensor == null) {
             voltageScale = 1.0;
-            voltagePrimed = true;
-
+            voltagePrimed = false;
             return;
         }
 
-        double measuredVoltage =
-                voltageSensor.getVoltage();
+        double measured = voltageSensor.getVoltage();
 
-        /*
-         * Reject invalid sensor readings.
-         */
-        if (!Double.isFinite(measuredVoltage)
-                || measuredVoltage <= 0.0) {
+        if (!Double.isFinite(measured)
+                || measured <= 0.0
+                || !Double.isFinite(MIN_VOLTAGE)
+                || !Double.isFinite(MAX_VOLTAGE)
+                || MIN_VOLTAGE <= 0.0
+                || MAX_VOLTAGE < MIN_VOLTAGE
+                || !Double.isFinite(NOMINAL_VOLTAGE)
+                || NOMINAL_VOLTAGE <= 0.0) {
 
             voltageScale = 1.0;
+            voltagePrimed = false;
             return;
         }
 
-        measuredVoltage =
-                clamp(
-                        measuredVoltage,
-                        MIN_VOLTAGE,
-                        MAX_VOLTAGE
-                );
+        measured = clamp(
+                measured,
+                MIN_VOLTAGE,
+                MAX_VOLTAGE
+        );
 
         if (!voltagePrimed) {
-
-            filteredVoltage =
-                    measuredVoltage;
-
+            filteredVoltage = measured;
             voltagePrimed = true;
 
         } else {
-
-            double alpha =
-                    clamp(
-                            VOLTAGE_FILTER_ALPHA,
-                            0.0,
-                            1.0
-                    );
+            double alpha = Double.isFinite(VOLTAGE_FILTER_ALPHA)
+                    ? clamp(VOLTAGE_FILTER_ALPHA, 0.0, 1.0)
+                    : 1.0;
 
             filteredVoltage +=
-                    alpha
-                            * (
-                            measuredVoltage
-                                    - filteredVoltage
-                    );
+                    alpha * (measured - filteredVoltage);
         }
 
-        if (filteredVoltage <= 0.0) {
-
-            voltageScale = 1.0;
-
-        } else {
-
-            voltageScale =
-                    NOMINAL_VOLTAGE
-                            / filteredVoltage;
-        }
+        voltageScale = NOMINAL_VOLTAGE / filteredVoltage;
     }
 
+    // ---------------------------------------------------------------------
+    // Status
+    // ---------------------------------------------------------------------
 
-    // -------------------------------------------------------------------------
-    // Shooter status
-    // -------------------------------------------------------------------------
-
-    public boolean isAtSpeed(
-            double toleranceTPS
-    ) {
-
-        return shooter != null
-                && shooter.atSpeed(
-                toleranceTPS
-        );
+    public boolean isUsingDistanceRegression() {
+        return usingDistanceRegression;
     }
 
+    public double getGoalDistance() {
+        return goalDistance;
+    }
+
+    public double getFixedTargetTPS() {
+        return fixedTargetTPS;
+    }
+
+    public double getFixedHoodBase() {
+        return fixedHoodBase;
+    }
+
+    public boolean isAtSpeed(double toleranceTPS) {
+        return shooter != null && shooter.atSpeed(toleranceTPS);
+    }
 
     public double getTargetTPS() {
-
-        if (shooter == null) {
-            return 0.0;
-        }
-
-        return shooter.targetTPS;
+        return shooter == null ? 0.0 : shooter.targetTPS;
     }
 
-
-    /**
-     * Returns the filtered shooter velocity used by the PF controller.
-     */
     public double getCurrentTPS() {
-
-        if (shooter == null) {
-            return 0.0;
-        }
-
-        return shooter.currentTPS;
+        return shooter == null ? 0.0 : shooter.currentTPS;
     }
 
-
-    /**
-     * Returns unfiltered shooter encoder velocity.
-     */
     public double getRawTPS() {
-
-        if (shooter == null) {
-            return 0.0;
-        }
-
-        return shooter.rawTPS;
+        return shooter == null ? 0.0 : shooter.rawTPS;
     }
-
 
     public double getErrorTPS() {
-
-        if (shooter == null) {
-            return 0.0;
-        }
-
-        return shooter.errorTPS;
+        return shooter == null ? 0.0 : shooter.errorTPS;
     }
-
 
     public double getCommandedPower() {
-
-        if (shooter == null) {
-            return 0.0;
-        }
-
-        return shooter.power;
+        return shooter == null ? 0.0 : shooter.power;
     }
 
-
-    // -------------------------------------------------------------------------
-    // Feeder status
-    // -------------------------------------------------------------------------
-
-    public boolean isFeederAtSpeed(
-            double toleranceTPS
-    ) {
-
-        return feeder != null
-                && feeder.atSpeed(
-                toleranceTPS
-        );
+    public boolean isFeederAtSpeed(double toleranceTPS) {
+        return feeder != null && feeder.atSpeed(toleranceTPS);
     }
-
 
     public double getFeederTargetTPS() {
-
-        if (feeder == null) {
-            return 0.0;
-        }
-
-        return feeder.targetTPS;
+        return feeder == null ? 0.0 : feeder.targetTPS;
     }
-
 
     public double getFeederCurrentTPS() {
-
-        if (feeder == null) {
-            return 0.0;
-        }
-
-        return feeder.currentTPS;
+        return feeder == null ? 0.0 : feeder.currentTPS;
     }
-
 
     public double getFeederRawTPS() {
-
-        if (feeder == null) {
-            return 0.0;
-        }
-
-        return feeder.rawTPS;
+        return feeder == null ? 0.0 : feeder.rawTPS;
     }
-
 
     public double getFeederErrorTPS() {
-
-        if (feeder == null) {
-            return 0.0;
-        }
-
-        return feeder.errorTPS;
+        return feeder == null ? 0.0 : feeder.errorTPS;
     }
-
 
     public double getFeederCommandedPower() {
-
-        if (feeder == null) {
-            return 0.0;
-        }
-
-        return feeder.power;
+        return feeder == null ? 0.0 : feeder.power;
     }
 
-
-    // -------------------------------------------------------------------------
-    // Hood status
-    // -------------------------------------------------------------------------
-
-    /**
-     * Returns the last position sent to the hood servo.
-     */
     public double getHoodPosition() {
         return hoodCommanded;
     }
-
 
     public double getHoodBase() {
         return hoodBase;
     }
 
-
     public double getHoodCompensation() {
         return hoodCompensation;
     }
-
-
-    // -------------------------------------------------------------------------
-    // Voltage status
-    // -------------------------------------------------------------------------
 
     public double getVoltage() {
         return filteredVoltage;
     }
 
-
     public double getVoltageScale() {
         return voltageScale;
     }
 
-
-    // -------------------------------------------------------------------------
-    // Compatibility getters for existing telemetry
-    //
-    // In the current hardware:
-    //
-    // "Front" refers to the shooter motor.
-    // "Back" refers to the feeder motor.
-    // -------------------------------------------------------------------------
+    // ---------------------------------------------------------------------
+    // Compatibility getters
+    // ---------------------------------------------------------------------
 
     public double getFrontMotorPower() {
-
-        if (shooter == null) {
-            return 0.0;
-        }
-
-        return shooter.getMotorPower();
+        return shooter == null ? 0.0 : shooter.getMotorPower();
     }
-
 
     public double getBackMotorPower() {
-
-        if (feeder == null) {
-            return 0.0;
-        }
-
-        return feeder.getMotorPower();
+        return feeder == null ? 0.0 : feeder.getMotorPower();
     }
-
 
     public double getFrontVelocityTPS() {
         return getCurrentTPS();
     }
 
-
     public double getBackVelocityTPS() {
         return getFeederCurrentTPS();
     }
 
-
-    // -------------------------------------------------------------------------
-    // Utilities
-    // -------------------------------------------------------------------------
-
-    private double clamp(
+    private static double clamp(
             double value,
             double minimum,
             double maximum
     ) {
-
-        return Math.max(
-                minimum,
-                Math.min(
-                        maximum,
-                        value
-                )
-        );
-    }
-
-
-    private static double clampStatic(
-            double value,
-            double minimum,
-            double maximum
-    ) {
-
-        return Math.max(
-                minimum,
-                Math.min(
-                        maximum,
-                        value
-                )
-        );
+        return Math.max(minimum, Math.min(maximum, value));
     }
 }

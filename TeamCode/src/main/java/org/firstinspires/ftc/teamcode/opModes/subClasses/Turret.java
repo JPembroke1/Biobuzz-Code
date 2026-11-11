@@ -8,70 +8,59 @@ import com.qualcomm.robotcore.hardware.Servo;
 @Configurable
 public class Turret {
 
-    // -------------------------------------------------------------------------
+    // ---------------------------------------------------------------------
     // Hardware
-    // -------------------------------------------------------------------------
-
-    private Servo turretServo;
+    // ---------------------------------------------------------------------
 
     public static String TURRET_SERVO_NAME = "turretServo";
 
+    private Servo turretServo;
 
-    // -------------------------------------------------------------------------
+    // ---------------------------------------------------------------------
     // Servo calibration
     //
-    // Total mechanical travel is 180 degrees.
+    // Original calibration:
+    // 0.0 = robot-right
+    // 0.5 = robot-back
+    // 1.0 = robot-left
     //
-    // Servo 0.0 = full robot-right
-    // Servo 0.5 = centre, pointing out of the robot's back
-    // Servo 1.0 = full robot-left
-    // -------------------------------------------------------------------------
+    // Verify these physical directions before changing the mapping.
+    // ---------------------------------------------------------------------
 
     public static double SERVO_CENTER = 0.5;
 
     public static double RIGHT_SERVO_LIMIT = 0.0;
     public static double LEFT_SERVO_LIMIT = 1.0;
 
+    /**
+     * false preserves the original angle-to-servo mapping.
+     *
+     * Set true only if testing confirms automatic aiming moves
+     * in the opposite direction.
+     */
+    public static boolean REVERSE_AIM_MAPPING = false;
 
-    // -------------------------------------------------------------------------
+    // ---------------------------------------------------------------------
     // Aim tuning
-    //
-    // AIM_OFFSET is measured in servo-position units.
-    // -------------------------------------------------------------------------
+    // ---------------------------------------------------------------------
 
     public static double AIM_OFFSET = 0.0;
     public static double AIM_GAIN = 1.0;
 
+    // Servo centre points out of the robot's back.
+    public static double TURRET_ZERO_OFFSET_DEG = 180.0;
 
-    // -------------------------------------------------------------------------
-    // Turret pivot offset from Pedro's localization point
+    // ---------------------------------------------------------------------
+    // Turret pivot offset from localization reference
     //
-    // +X = robot forward
-    // +Y = robot left
-    //
-    // Units are inches.
-    // -------------------------------------------------------------------------
+    // Robot frame:
+    // +X = forward.
+    // +Y = left.
+    // Units: inches.
+    // ---------------------------------------------------------------------
 
     public static double TURRET_OFFSET_X_IN = 0.0;
     public static double TURRET_OFFSET_Y_IN = 0.0;
-
-
-    // -------------------------------------------------------------------------
-    // Mechanical zero
-    //
-    // Servo centre points directly out of the robot's back.
-    // -------------------------------------------------------------------------
-
-    public static double TURRET_ZERO_OFFSET_DEG = 180.0;
-
-
-    // -------------------------------------------------------------------------
-    // Mechanical angle limits
-    //
-    // -90 degrees = full robot-right = servo 0.0
-    //   0 degrees = robot-back       = servo 0.5
-    // +90 degrees = full robot-left  = servo 1.0
-    // -------------------------------------------------------------------------
 
     private static final double MIN_TURRET_ANGLE_RAD =
             -Math.PI / 2.0;
@@ -79,10 +68,12 @@ public class Turret {
     private static final double MAX_TURRET_ANGLE_RAD =
             Math.PI / 2.0;
 
-
-    // -------------------------------------------------------------------------
-    // Goal selection
-    // -------------------------------------------------------------------------
+    // ---------------------------------------------------------------------
+    // Legacy alliance targets
+    //
+    // Retained for compatibility with existing autonomous code.
+    // CombinedTeleOp uses setTargetPose() instead.
+    // ---------------------------------------------------------------------
 
     public enum Goal {
         RED,
@@ -90,43 +81,28 @@ public class Turret {
         CUSTOM
     }
 
-    /*
-     * These values must be set to the actual Pedro field coordinates before
-     * calling init().
-     */
     public static double RED_GOAL_X = 0.0;
     public static double RED_GOAL_Y = 0.0;
 
     public static double BLUE_GOAL_X = 0.0;
     public static double BLUE_GOAL_Y = 0.0;
 
-    private Goal selectedGoal = Goal.RED;
+    private Goal selectedGoal = Goal.CUSTOM;
+    private Pose targetPose = null;
 
-    private Pose targetPose =
-            new Pose(
-                    RED_GOAL_X,
-                    RED_GOAL_Y,
-                    0.0
-            );
-
-
-    // -------------------------------------------------------------------------
-    // Optional velocity compensation
+    // ---------------------------------------------------------------------
+    // Optional velocity lead
     //
-    // vx and vy must be field-frame velocities in inches per second.
-    // -------------------------------------------------------------------------
+    // vx/vy must be field-frame inches per second.
+    // VELOCITY_LEAD_GAIN acts as a lead time in seconds.
+    // ---------------------------------------------------------------------
 
     public static boolean velocityCompensationActive = false;
-
     public static double VELOCITY_LEAD_GAIN = 0.3;
 
-
-    // -------------------------------------------------------------------------
-    // Behind-target wrap protection
-    //
-    // This prevents the turret switching rapidly between full-left and
-    // full-right when the target is near the unreachable robot-front region.
-    // -------------------------------------------------------------------------
+    // ---------------------------------------------------------------------
+    // Wrap protection near the unreachable robot-front region
+    // ---------------------------------------------------------------------
 
     public static double BEHIND_HOLD_ENTER_DEG = 25.0;
     public static double BEHIND_HOLD_EXIT_DEG = 35.0;
@@ -134,17 +110,11 @@ public class Turret {
     private boolean holdingBehind = false;
     private int holdSide = 1;
 
-
-    // -------------------------------------------------------------------------
-    // Minimum aiming distance
-    // -------------------------------------------------------------------------
-
     public static double MIN_AIM_DISTANCE_IN = 1.0;
 
-
-    // -------------------------------------------------------------------------
+    // ---------------------------------------------------------------------
     // Diagnostics
-    // -------------------------------------------------------------------------
+    // ---------------------------------------------------------------------
 
     public static double lastRobotX = 0.0;
     public static double lastRobotY = 0.0;
@@ -153,13 +123,13 @@ public class Turret {
     public static double lastPivotX = 0.0;
     public static double lastPivotY = 0.0;
 
-    public static double lastTargetX = 0.0;
-    public static double lastTargetY = 0.0;
+    public static double lastTargetX = Double.NaN;
+    public static double lastTargetY = Double.NaN;
 
-    public static double lastDistanceToTargetIn = 0.0;
+    public static double lastDistanceToTargetIn = Double.NaN;
 
-    public static double lastFieldTargetAngleDeg = 0.0;
-    public static double lastRelativeAngleDeg = 0.0;
+    public static double lastFieldTargetAngleDeg = Double.NaN;
+    public static double lastRelativeAngleDeg = Double.NaN;
 
     public static double lastVelocityLeadX = 0.0;
     public static double lastVelocityLeadY = 0.0;
@@ -170,19 +140,12 @@ public class Turret {
     public static boolean lastHoldingBehind = false;
     public static int lastHoldSide = 1;
 
-    public static String lastSelectedGoal = "RED";
+    public static String lastSelectedGoal = "CUSTOM";
+    public static boolean lastFixedPositionMode = true;
 
-    /*
-     * true when a direct servo-position command controls the turret.
-     *
-     * false when aimTurret() is controlling the turret from field coordinates.
-     */
-    public static boolean lastFixedPositionMode = false;
-
-
-    // -------------------------------------------------------------------------
+    // ---------------------------------------------------------------------
     // Initialization
-    // -------------------------------------------------------------------------
+    // ---------------------------------------------------------------------
 
     public void init(HardwareMap hardwareMap) {
 
@@ -191,770 +154,450 @@ public class Turret {
                 TURRET_SERVO_NAME
         );
 
-        /*
-         * Servo direction is not reversed.
-         *
-         * Direction is handled explicitly by the angle-to-position mapping.
-         */
-        turretServo.setDirection(
-                Servo.Direction.FORWARD
-        );
+        turretServo.setDirection(Servo.Direction.FORWARD);
 
-        holdingBehind = false;
-        holdSide = 1;
+        targetPose = null;
+        selectedGoal = Goal.CUSTOM;
 
+        resetAimState();
+
+        // Compatibility with existing autonomous routines.
+        // Unknown alliance does not silently select blue.
         selectAllianceGoal();
+
         setCentre();
     }
 
+    // ---------------------------------------------------------------------
+    // Target selection
+    // ---------------------------------------------------------------------
 
-    // -------------------------------------------------------------------------
-    // Goal selection
-    // -------------------------------------------------------------------------
-
-    /**
-     * Selects the goal belonging to the alliance stored in PoseStorage.
-     *
-     * This does not cycle between goals.
-     */
     public void selectAllianceGoal() {
 
         if (PoseStorage.isRed()) {
+            selectRedGoal();
 
-            selectGoal(Goal.RED);
-
-        } else {
-
-            selectGoal(Goal.BLUE);
+        } else if (PoseStorage.isBlue()) {
+            selectBlueGoal();
         }
     }
 
-
-    /**
-     * Selects one specific alliance goal.
-     */
     public void selectGoal(Goal goal) {
 
         if (goal == null || goal == Goal.CUSTOM) {
             return;
         }
 
-        selectedGoal = goal;
+        double x = goal == Goal.RED
+                ? RED_GOAL_X
+                : BLUE_GOAL_X;
 
-        if (selectedGoal == Goal.RED) {
+        double y = goal == Goal.RED
+                ? RED_GOAL_Y
+                : BLUE_GOAL_Y;
 
-            targetPose = new Pose(
-                    RED_GOAL_X,
-                    RED_GOAL_Y,
-                    0.0
-            );
-
-        } else {
-
-            targetPose = new Pose(
-                    BLUE_GOAL_X,
-                    BLUE_GOAL_Y,
-                    0.0
-            );
+        if (!Double.isFinite(x) || !Double.isFinite(y)) {
+            return;
         }
 
-        resetAimState();
-
-        lastSelectedGoal =
-                selectedGoal.name();
+        applyTarget(goal, x, y);
     }
-
 
     public void selectRedGoal() {
         selectGoal(Goal.RED);
     }
 
-
     public void selectBlueGoal() {
         selectGoal(Goal.BLUE);
     }
 
+    public void setTargetPose(Pose pose) {
+
+        if (pose == null
+                || !Double.isFinite(pose.x())
+                || !Double.isFinite(pose.y())) {
+            return;
+        }
+
+        applyTarget(Goal.CUSTOM, pose.x(), pose.y());
+    }
+
+    private void applyTarget(Goal goal, double x, double y) {
+
+        boolean changed =
+                selectedGoal != goal
+                        || targetPose == null
+                        || Double.compare(targetPose.x(), x) != 0
+                        || Double.compare(targetPose.y(), y) != 0;
+
+        if (changed) {
+            selectedGoal = goal;
+            targetPose = new Pose(x, y, 0.0);
+            resetAimState();
+        }
+
+        lastSelectedGoal = selectedGoal.name();
+        lastTargetX = x;
+        lastTargetY = y;
+    }
 
     public Goal getSelectedGoal() {
         return selectedGoal;
     }
 
-
     public Pose getTargetPose() {
-        return targetPose;
-    }
 
-
-    /**
-     * Allows an OpMode to provide a deliberate custom target.
-     */
-    public void setTargetPose(Pose pose) {
-
-        if (pose == null) {
-            return;
+        if (targetPose == null) {
+            return null;
         }
 
-        targetPose = pose;
-        selectedGoal = Goal.CUSTOM;
-
-        resetAimState();
-
-        lastSelectedGoal =
-                selectedGoal.name();
+        return new Pose(
+                targetPose.x(),
+                targetPose.y(),
+                targetPose.heading()
+        );
     }
 
-
-    /**
-     * Re-selects the alliance goal stored in PoseStorage.
-     *
-     * This never advances to another goal.
-     */
     public void realignToAllianceGoal() {
         selectAllianceGoal();
+        resetAimState();
     }
 
-
-    /**
-     * Clears the hold state without changing the selected target.
-     */
     public void realignToSelectedGoal() {
         resetAimState();
     }
 
-
     private void resetAimState() {
-
         holdingBehind = false;
         holdSide = 1;
 
         lastHoldingBehind = false;
         lastHoldSide = holdSide;
+
+        // Prevent stale aiming diagnostics being treated as current.
+        lastRelativeAngleDeg = Double.NaN;
+        lastFieldTargetAngleDeg = Double.NaN;
+        lastDistanceToTargetIn = Double.NaN;
     }
 
-
-    // -------------------------------------------------------------------------
+    // ---------------------------------------------------------------------
     // Field-coordinate aiming
-    // -------------------------------------------------------------------------
+    // ---------------------------------------------------------------------
 
-    /**
-     * Aims the turret at the selected field target.
-     *
-     * vx and vy must be field-frame velocities in inches per second.
-     */
+    public void aimTurret(Pose robotPose) {
+        aimTurret(robotPose, 0.0, 0.0);
+    }
+
     public void aimTurret(
             Pose robotPose,
             double vx,
             double vy
     ) {
 
-        if (robotPose == null
-                || turretServo == null
-                || targetPose == null) {
-
-            return;
-        }
-
-        /*
-         * Field-coordinate aiming now controls the turret.
-         */
-        lastFixedPositionMode = false;
-
-        double headingRad =
-                robotPose.heading();
-
-        double headingCos =
-                Math.cos(headingRad);
-
-        double headingSin =
-                Math.sin(headingRad);
-
-
-        // ---------------------------------------------------------------------
-        // Calculate turret pivot field position
-        // ---------------------------------------------------------------------
-
-        double pivotX =
-                robotPose.x()
-                        + TURRET_OFFSET_X_IN * headingCos
-                        - TURRET_OFFSET_Y_IN * headingSin;
-
-        double pivotY =
-                robotPose.y()
-                        + TURRET_OFFSET_X_IN * headingSin
-                        + TURRET_OFFSET_Y_IN * headingCos;
-
-
-        // ---------------------------------------------------------------------
-        // Vector from turret pivot to selected target
-        // ---------------------------------------------------------------------
-
-        double dx =
-                targetPose.x() - pivotX;
-
-        double dy =
-                targetPose.y() - pivotY;
-
-
-        // ---------------------------------------------------------------------
-        // Optional velocity compensation
-        // ---------------------------------------------------------------------
-
-        double leadX =
-                velocityCompensationActive
-                        ? -vx * VELOCITY_LEAD_GAIN
-                        : 0.0;
-
-        double leadY =
-                velocityCompensationActive
-                        ? -vy * VELOCITY_LEAD_GAIN
-                        : 0.0;
-
-        double aimDx =
-                dx + leadX;
-
-        double aimDy =
-                dy + leadY;
-
-        double physicalDistance =
-                Math.hypot(dx, dy);
-
-        double compensatedDistance =
-                Math.hypot(aimDx, aimDy);
-
-
-        updateDiagnostics(
-                robotPose,
-                pivotX,
-                pivotY,
-                physicalDistance,
-                leadX,
-                leadY
-        );
-
-
-        /*
-         * Do not calculate an angle when the pivot and target are effectively
-         * in the same location.
-         */
-        if (compensatedDistance < MIN_AIM_DISTANCE_IN) {
-            return;
-        }
-
-
-        // ---------------------------------------------------------------------
-        // Field angle from turret pivot to target
-        // ---------------------------------------------------------------------
-
-        double fieldTargetAngleRad =
-                Math.atan2(
-                        aimDy,
-                        aimDx
-                );
-
-
-        // ---------------------------------------------------------------------
-        // Convert field angle into turret-relative angle
-        //
-        // Turret centre points backwards, so the 180-degree mechanical zero
-        // offset is subtracted along with the robot heading.
-        // ---------------------------------------------------------------------
-
-        double rawRelativeAngleRad =
-                normaliseRadians(
-                        fieldTargetAngleRad
-                                - headingRad
-                                - Math.toRadians(
-                                TURRET_ZERO_OFFSET_DEG
-                        )
-                );
-
-        lastFieldTargetAngleDeg =
-                Math.toDegrees(
-                        fieldTargetAngleRad
-                );
-
-        lastRelativeAngleDeg =
-                Math.toDegrees(
-                        rawRelativeAngleRad
-                );
-
-
-        // ---------------------------------------------------------------------
-        // Protect against left/right jumping near robot-front
-        // ---------------------------------------------------------------------
-
-        double commandedAngleRad =
-                applyBehindHold(
-                        rawRelativeAngleRad
-                );
-
-        if (!holdingBehind) {
-
-            commandedAngleRad *=
-                    AIM_GAIN;
-        }
-
-
-        // ---------------------------------------------------------------------
-        // Clamp to physical travel
-        // ---------------------------------------------------------------------
-
-        commandedAngleRad = clamp(
-                commandedAngleRad,
-                MIN_TURRET_ANGLE_RAD,
-                MAX_TURRET_ANGLE_RAD
-        );
-
-
-        // ---------------------------------------------------------------------
-        // Convert angle to servo position
-        // ---------------------------------------------------------------------
-
-        double servoPosition =
-                angleToServoPosition(
-                        commandedAngleRad
-                );
-
-        servoPosition +=
-                AIM_OFFSET;
-
-        servoPosition =
-                clampToServoLimits(
-                        servoPosition
-                );
-
-        turretServo.setPosition(
-                servoPosition
-        );
-
-
-        // ---------------------------------------------------------------------
-        // Diagnostics
-        // ---------------------------------------------------------------------
-
-        lastFinalAngleDeg =
-                Math.toDegrees(
-                        commandedAngleRad
-                );
-
-        lastServoPosition =
-                servoPosition;
-
-        lastHoldingBehind =
-                holdingBehind;
-
-        lastHoldSide =
-                holdSide;
-    }
-
-
-    /**
-     * Convenience overload when velocity compensation is not required.
-     */
-    public void aimTurret(Pose robotPose) {
-
-        aimTurret(
-                robotPose,
-                0.0,
-                0.0
-        );
-    }
-
-
-    // -------------------------------------------------------------------------
-    // Fixed autonomous position control
-    // -------------------------------------------------------------------------
-
-    /**
-     * Commands an exact turret servo position.
-     *
-     * Calibration:
-     *
-     * 0.0 = full robot-right
-     * 0.5 = centre, pointing robot-back
-     * 1.0 = full robot-left
-     *
-     * This method is intended for autonomous routines that use pre-tuned
-     * shooting positions rather than field-coordinate aiming.
-     */
-    public void setFixedServoPosition(double position) {
-
         if (turretServo == null) {
             return;
         }
 
-        double clippedPosition =
-                clampToServoLimits(
-                        position
-                );
+        if (!validPose(robotPose)
+                || targetPose == null
+                || !Double.isFinite(TURRET_OFFSET_X_IN)
+                || !Double.isFinite(TURRET_OFFSET_Y_IN)
+                || !Double.isFinite(TURRET_ZERO_OFFSET_DEG)
+                || !Double.isFinite(AIM_GAIN)
+                || !Double.isFinite(AIM_OFFSET)
+                || !Double.isFinite(MIN_AIM_DISTANCE_IN)) {
 
-        turretServo.setPosition(
-                clippedPosition
+            setCentre();
+            return;
+        }
+
+        double heading = robotPose.heading();
+
+        double cos = Math.cos(heading);
+        double sin = Math.sin(heading);
+
+        double pivotX =
+                robotPose.x()
+                        + TURRET_OFFSET_X_IN * cos
+                        - TURRET_OFFSET_Y_IN * sin;
+
+        double pivotY =
+                robotPose.y()
+                        + TURRET_OFFSET_X_IN * sin
+                        + TURRET_OFFSET_Y_IN * cos;
+
+        double dx = targetPose.x() - pivotX;
+        double dy = targetPose.y() - pivotY;
+
+        double leadX = 0.0;
+        double leadY = 0.0;
+
+        if (velocityCompensationActive
+                && Double.isFinite(vx)
+                && Double.isFinite(vy)
+                && Double.isFinite(VELOCITY_LEAD_GAIN)) {
+
+            leadX = -vx * VELOCITY_LEAD_GAIN;
+            leadY = -vy * VELOCITY_LEAD_GAIN;
+        }
+
+        double aimDx = dx + leadX;
+        double aimDy = dy + leadY;
+
+        double physicalDistance = Math.hypot(dx, dy);
+        double compensatedDistance = Math.hypot(aimDx, aimDy);
+
+        if (!Double.isFinite(physicalDistance)
+                || !Double.isFinite(compensatedDistance)
+                || compensatedDistance <= Math.max(
+                0.0, MIN_AIM_DISTANCE_IN
+        )) {
+
+            setCentre();
+            return;
+        }
+
+        lastFixedPositionMode = false;
+
+        lastRobotX = robotPose.x();
+        lastRobotY = robotPose.y();
+        lastRobotHeadingDeg = Math.toDegrees(heading);
+
+        lastPivotX = pivotX;
+        lastPivotY = pivotY;
+
+        lastTargetX = targetPose.x();
+        lastTargetY = targetPose.y();
+
+        lastDistanceToTargetIn = physicalDistance;
+
+        lastVelocityLeadX = leadX;
+        lastVelocityLeadY = leadY;
+
+        double fieldAngle = Math.atan2(aimDy, aimDx);
+
+        double relativeAngle = normalizeRadians(
+                fieldAngle
+                        - heading
+                        - Math.toRadians(TURRET_ZERO_OFFSET_DEG)
         );
 
+        lastFieldTargetAngleDeg = Math.toDegrees(fieldAngle);
+        lastRelativeAngleDeg = Math.toDegrees(relativeAngle);
+
+        double commandedAngle = applyBehindHold(relativeAngle);
+
+        if (!holdingBehind) {
+            commandedAngle *= AIM_GAIN;
+        }
+
+        commandedAngle = clamp(
+                commandedAngle,
+                MIN_TURRET_ANGLE_RAD,
+                MAX_TURRET_ANGLE_RAD
+        );
+
+        double servoPosition = clampToServoLimits(
+                angleToServoPosition(commandedAngle) + AIM_OFFSET
+        );
+
+        turretServo.setPosition(servoPosition);
+
+        lastFinalAngleDeg = Math.toDegrees(commandedAngle);
+        lastServoPosition = servoPosition;
+
+        lastHoldingBehind = holdingBehind;
+        lastHoldSide = holdSide;
+        lastSelectedGoal = selectedGoal.name();
+    }
+
+    // ---------------------------------------------------------------------
+    // Fixed servo commands
+    // ---------------------------------------------------------------------
+
+    public void setFixedServoPosition(double position) {
+
+        if (turretServo == null || !Double.isFinite(position)) {
+            return;
+        }
+
+        double clipped = clampToServoLimits(position);
+
+        turretServo.setPosition(clipped);
+
         lastFixedPositionMode = true;
+        lastServoPosition = clipped;
 
-        /*
-         * Convert the servo command back into its equivalent mechanical angle.
-         *
-         * Servo 0.0 = -90 degrees
-         * Servo 0.5 =   0 degrees
-         * Servo 1.0 = +90 degrees
-         */
+        double mappingSign = REVERSE_AIM_MAPPING ? -1.0 : 1.0;
+
         lastFinalAngleDeg =
-                (clippedPosition - SERVO_CENTER)
-                        * 180.0;
+                mappingSign * (clipped - centrePosition()) * 180.0;
 
-        lastServoPosition =
-                clippedPosition;
-
-        /*
-         * A fixed command must not inherit the automatic aiming hold state.
-         */
         holdingBehind = false;
 
         if (lastFinalAngleDeg > 0.0) {
-
             holdSide = 1;
 
         } else if (lastFinalAngleDeg < 0.0) {
-
             holdSide = -1;
         }
 
         lastHoldingBehind = false;
         lastHoldSide = holdSide;
+
+        lastRelativeAngleDeg = Double.NaN;
+        lastFieldTargetAngleDeg = Double.NaN;
     }
 
-
-    /**
-     * Centres the turret at servo position 0.5.
-     *
-     * Physically, this points directly out of the robot's back.
-     */
     public void setCentre() {
-
-        setFixedServoPosition(
-                SERVO_CENTER
-        );
-
+        setFixedServoPosition(centrePosition());
         resetAimState();
-
-        lastFinalAngleDeg = 0.0;
-        lastServoPosition = SERVO_CENTER;
-        lastFixedPositionMode = true;
     }
 
-
-    /**
-     * Compatibility method for older OpModes.
-     *
-     * The calibrated centre physically points out of the robot's back.
-     */
     public void setForward() {
         setCentre();
     }
 
-
-    /**
-     * Moves the turret to full robot-right.
-     */
     public void setFullRight() {
-
-        setFixedServoPosition(
-                RIGHT_SERVO_LIMIT
-        );
-
-        holdingBehind = false;
-        holdSide = -1;
-
-        lastFinalAngleDeg = -90.0;
-        lastHoldingBehind = false;
-        lastHoldSide = holdSide;
-        lastFixedPositionMode = true;
+        setFixedServoPosition(RIGHT_SERVO_LIMIT);
     }
 
-
-    /**
-     * Moves the turret to full robot-left.
-     */
     public void setFullLeft() {
-
-        setFixedServoPosition(
-                LEFT_SERVO_LIMIT
-        );
-
-        holdingBehind = false;
-        holdSide = 1;
-
-        lastFinalAngleDeg = 90.0;
-        lastHoldingBehind = false;
-        lastHoldSide = holdSide;
-        lastFixedPositionMode = true;
+        setFixedServoPosition(LEFT_SERVO_LIMIT);
     }
 
+    // ---------------------------------------------------------------------
+    // Wrap-region hysteresis
+    // ---------------------------------------------------------------------
 
-    public boolean isFixedPositionMode() {
-        return lastFixedPositionMode;
-    }
+    private double applyBehindHold(double relativeAngle) {
 
+        double absoluteAngle = Math.abs(relativeAngle);
 
-    // -------------------------------------------------------------------------
-    // Behind-region hysteresis
-    // -------------------------------------------------------------------------
+        double enterDegrees = Double.isFinite(BEHIND_HOLD_ENTER_DEG)
+                ? clamp(BEHIND_HOLD_ENTER_DEG, 0.0, 89.0)
+                : 25.0;
 
-    private double applyBehindHold(
-            double relativeAngleRad
-    ) {
+        double exitDegrees = Double.isFinite(BEHIND_HOLD_EXIT_DEG)
+                ? clamp(BEHIND_HOLD_EXIT_DEG, enterDegrees, 89.0)
+                : Math.max(35.0, enterDegrees);
 
-        double absoluteAngleRad =
-                Math.abs(
-                        relativeAngleRad
-                );
+        double enterThreshold =
+                Math.PI - Math.toRadians(enterDegrees);
 
-        double enterHoldThresholdRad =
-                Math.PI
-                        - Math.toRadians(
-                        BEHIND_HOLD_ENTER_DEG
-                );
+        double exitThreshold =
+                Math.PI - Math.toRadians(exitDegrees);
 
-        double exitHoldThresholdRad =
-                Math.PI
-                        - Math.toRadians(
-                        BEHIND_HOLD_EXIT_DEG
-                );
+        if (!holdingBehind && absoluteAngle >= enterThreshold) {
 
-
-        /*
-         * Enter the hold region as the target approaches robot-front.
-         */
-        if (!holdingBehind
-                && absoluteAngleRad >= enterHoldThresholdRad) {
-
-            if (relativeAngleRad > 0.0) {
-
+            if (relativeAngle > 0.0) {
                 holdSide = 1;
 
-            } else if (relativeAngleRad < 0.0) {
-
+            } else if (relativeAngle < 0.0) {
                 holdSide = -1;
             }
 
             holdingBehind = true;
         }
 
-
-        /*
-         * Exit only when the target has moved far enough from the wrap region.
-         */
-        if (holdingBehind
-                && absoluteAngleRad <= exitHoldThresholdRad) {
-
+        if (holdingBehind && absoluteAngle <= exitThreshold) {
             holdingBehind = false;
         }
 
-
         if (holdingBehind) {
-
             return holdSide > 0
                     ? MAX_TURRET_ANGLE_RAD
                     : MIN_TURRET_ANGLE_RAD;
         }
 
-
-        /*
-         * Remember the last meaningful requested side.
-         */
-        if (absoluteAngleRad > Math.toRadians(2.0)) {
-
-            holdSide =
-                    relativeAngleRad >= 0.0
-                            ? 1
-                            : -1;
+        if (absoluteAngle > Math.toRadians(2.0)) {
+            holdSide = relativeAngle >= 0.0 ? 1 : -1;
         }
 
-        return relativeAngleRad;
+        return relativeAngle;
     }
 
+    // ---------------------------------------------------------------------
+    // Servo mapping
+    // ---------------------------------------------------------------------
 
-    // -------------------------------------------------------------------------
-    // Diagnostics
-    // -------------------------------------------------------------------------
+    private double angleToServoPosition(double angleRad) {
 
-    private void updateDiagnostics(
-            Pose robotPose,
-            double pivotX,
-            double pivotY,
-            double distance,
-            double leadX,
-            double leadY
-    ) {
+        double mappingSign = REVERSE_AIM_MAPPING ? -1.0 : 1.0;
 
-        lastRobotX =
-                robotPose.x();
-
-        lastRobotY =
-                robotPose.y();
-
-        lastRobotHeadingDeg =
-                Math.toDegrees(
-                        robotPose.heading()
-                );
-
-        lastPivotX =
-                pivotX;
-
-        lastPivotY =
-                pivotY;
-
-        lastTargetX =
-                targetPose.x();
-
-        lastTargetY =
-                targetPose.y();
-
-        lastDistanceToTargetIn =
-                distance;
-
-        lastVelocityLeadX =
-                leadX;
-
-        lastVelocityLeadY =
-                leadY;
-
-        lastHoldingBehind =
-                holdingBehind;
-
-        lastHoldSide =
-                holdSide;
-
-        lastSelectedGoal =
-                selectedGoal.name();
+        return centrePosition()
+                + mappingSign * Math.toDegrees(angleRad) / 180.0;
     }
 
+    private double clampToServoLimits(double position) {
+
+        double right = Double.isFinite(RIGHT_SERVO_LIMIT)
+                ? clamp(RIGHT_SERVO_LIMIT, 0.0, 1.0)
+                : 0.0;
+
+        double left = Double.isFinite(LEFT_SERVO_LIMIT)
+                ? clamp(LEFT_SERVO_LIMIT, 0.0, 1.0)
+                : 1.0;
+
+        return clamp(
+                position,
+                Math.min(right, left),
+                Math.max(right, left)
+        );
+    }
+
+    private static double centrePosition() {
+        return Double.isFinite(SERVO_CENTER)
+                ? clamp(SERVO_CENTER, 0.0, 1.0)
+                : 0.5;
+    }
+
+    // ---------------------------------------------------------------------
+    // Status and compatibility
+    // ---------------------------------------------------------------------
 
     public double getDistanceToTarget() {
         return lastDistanceToTargetIn;
     }
 
-
     public double getServoPosition() {
-
-        if (turretServo == null) {
-            return lastServoPosition;
-        }
-
-        return turretServo.getPosition();
+        return turretServo == null
+                ? lastServoPosition
+                : turretServo.getPosition();
     }
-
 
     public boolean isHoldingBehind() {
         return holdingBehind;
     }
 
+    public boolean isFixedPositionMode() {
+        return lastFixedPositionMode;
+    }
 
     public static double getCalibratedCentrePosition() {
-        return SERVO_CENTER;
+        return centrePosition();
     }
 
+    // ---------------------------------------------------------------------
+    // Utilities
+    // ---------------------------------------------------------------------
 
-    // -------------------------------------------------------------------------
-    // Angle-to-servo conversion
-    // -------------------------------------------------------------------------
-
-    /**
-     * Converts a mechanical turret angle into a servo position.
-     *
-     * -90 degrees = servo 0.0 = full robot-right
-     *   0 degrees = servo 0.5 = centre, pointing robot-back
-     * +90 degrees = servo 1.0 = full robot-left
-     */
-    private double angleToServoPosition(
-            double angleRad
-    ) {
-
-        double angleDeg =
-                Math.toDegrees(
-                        angleRad
-                );
-
-        double servoPosition =
-                SERVO_CENTER
-                        + angleDeg / 180.0;
-
-        return clampToServoLimits(
-                servoPosition
-        );
+    private boolean validPose(Pose pose) {
+        return pose != null
+                && Double.isFinite(pose.x())
+                && Double.isFinite(pose.y())
+                && Double.isFinite(pose.heading());
     }
 
-
-    private double clampToServoLimits(
-            double value
-    ) {
-
-        double minimumServoPosition =
-                Math.min(
-                        RIGHT_SERVO_LIMIT,
-                        LEFT_SERVO_LIMIT
-                );
-
-        double maximumServoPosition =
-                Math.max(
-                        RIGHT_SERVO_LIMIT,
-                        LEFT_SERVO_LIMIT
-                );
-
-        return clamp(
-                value,
-                minimumServoPosition,
-                maximumServoPosition
-        );
+    private static double normalizeRadians(double angle) {
+        return Math.atan2(Math.sin(angle), Math.cos(angle));
     }
 
-
-    // -------------------------------------------------------------------------
-    // Angle utilities
-    // -------------------------------------------------------------------------
-
-    /**
-     * Normalises an angle to the range -PI through +PI.
-     */
-    private double normaliseRadians(
-            double angleRad
-    ) {
-
-        while (angleRad > Math.PI) {
-
-            angleRad -=
-                    2.0 * Math.PI;
-        }
-
-        while (angleRad < -Math.PI) {
-
-            angleRad +=
-                    2.0 * Math.PI;
-        }
-
-        return angleRad;
-    }
-
-
-    // -------------------------------------------------------------------------
-    // General utilities
-    // -------------------------------------------------------------------------
-
-    private double clamp(
+    private static double clamp(
             double value,
             double minimum,
             double maximum
     ) {
-
-        return Math.max(
-                minimum,
-                Math.min(
-                        maximum,
-                        value
-                )
-        );
+        return Math.max(minimum, Math.min(maximum, value));
     }
 }
