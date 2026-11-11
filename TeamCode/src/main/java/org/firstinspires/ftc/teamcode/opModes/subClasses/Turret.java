@@ -5,6 +5,8 @@ import com.pedropathing.math.Pose;
 import com.qualcomm.robotcore.hardware.HardwareMap;
 import com.qualcomm.robotcore.hardware.Servo;
 
+import org.firstinspires.ftc.vision.apriltag.AprilTagClusterDetection;
+
 @Configurable
 public class Turret {
 
@@ -17,62 +19,174 @@ public class Turret {
     private Servo turretServo;
 
     // ---------------------------------------------------------------------
-    // Servo calibration
+    // Confirmed servo calibration
     //
-    // Original calibration:
-    // 0.0 = robot-right
-    // 0.5 = robot-back
-    // 1.0 = robot-left
+    // With robot heading = 180 degrees:
     //
-    // Verify these physical directions before changing the mapping.
+    // Servo 0.0 -> turret field heading 270 degrees
+    // Servo 0.5 -> turret field heading   0 degrees
+    // Servo 1.0 -> turret field heading  90 degrees
+    //
+    // Servo centre points 180 degrees behind the robot.
+    // Increasing servo position increases CCW turret heading.
     // ---------------------------------------------------------------------
 
     public static double SERVO_CENTER = 0.5;
 
+    /*
+     * Absolute fixed-command limits.
+     *
+     * Autonomous retains the full 0.0 to 1.0 range.
+     */
     public static double RIGHT_SERVO_LIMIT = 0.0;
     public static double LEFT_SERVO_LIMIT = 1.0;
 
-    /**
-     * false preserves the original angle-to-servo mapping.
-     *
-     * Set true only if testing confirms automatic aiming moves
-     * in the opposite direction.
+    /*
+     * False means positive turret angle increases servo position.
      */
     public static boolean REVERSE_AIM_MAPPING = false;
 
     // ---------------------------------------------------------------------
-    // Aim tuning
+    // Automatic travel limit
+    //
+    // Applies only to automatic field/camera aiming.
+    //
+    // Fixed autonomous commands retain the full servo range.
+    // ---------------------------------------------------------------------
+
+    public static double AUTO_AIM_MAX_ANGLE_DEG = 75.0;
+
+    // ---------------------------------------------------------------------
+    // Base aim tuning
+    //
+    // AIM_OFFSET is a servo-position offset.
+    //
+    // 0.01 servo position is approximately 1.8 turret degrees.
     // ---------------------------------------------------------------------
 
     public static double AIM_OFFSET = 0.0;
     public static double AIM_GAIN = 1.0;
 
-    // Servo centre points out of the robot's back.
+    /*
+     * Servo centre points directly behind the robot.
+     */
     public static double TURRET_ZERO_OFFSET_DEG = 180.0;
 
     // ---------------------------------------------------------------------
-    // Turret pivot offset from localization reference
+    // Turret pivot offset from Pedro/Pinpoint localization point
     //
-    // Robot frame:
-    // +X = forward.
-    // +Y = left.
+    // Robot reference frame:
+    //
+    // +X = robot forward
+    // +Y = robot left
+    //
     // Units: inches.
     // ---------------------------------------------------------------------
 
     public static double TURRET_OFFSET_X_IN = 0.0;
     public static double TURRET_OFFSET_Y_IN = 0.0;
 
-    private static final double MIN_TURRET_ANGLE_RAD =
-            -Math.PI / 2.0;
-
-    private static final double MAX_TURRET_ANGLE_RAD =
-            Math.PI / 2.0;
+    public static double MIN_AIM_DISTANCE_IN = 1.0;
 
     // ---------------------------------------------------------------------
-    // Legacy alliance targets
+    // Optional robot movement compensation
     //
-    // Retained for compatibility with existing autonomous code.
-    // CombinedTeleOp uses setTargetPose() instead.
+    // velocityX and velocityY must be field-frame velocities in inches/s.
+    // ---------------------------------------------------------------------
+
+    public static boolean velocityCompensationActive = false;
+    public static double VELOCITY_LEAD_GAIN = 0.3;
+
+    // ---------------------------------------------------------------------
+    // Turret-mounted Arducam fusion
+    //
+    // Pinpoint/Pedro supplies the coarse absolute turret angle.
+    //
+    // Because the camera rotates with the turret:
+    //
+    // camera angle estimate =
+    // current turret angle + camera bearing correction
+    //
+    // The fused angle blends the coarse and camera estimates.
+    // ---------------------------------------------------------------------
+
+    public static boolean CAMERA_FUSION_ENABLED = true;
+
+    /*
+     * Change to -1.0 only if positive camera bearing causes the turret
+     * to move farther away from the target.
+     */
+    public static double CAMERA_BEARING_SIGN = 1.0;
+
+    /*
+     * Converts measured camera bearing into visual correction.
+     *
+     * Start around 0.60 to reduce oscillation.
+     */
+    public static double CAMERA_CORRECTION_GAIN = 0.60;
+
+    /*
+     * Camera-to-shooter optical alignment correction in degrees.
+     */
+    public static double CAMERA_AIM_OFFSET_DEG = 0.0;
+
+    /*
+     * Camera bearing errors inside this range are ignored.
+     */
+    public static double CAMERA_DEADBAND_DEG = 0.75;
+
+    /*
+     * Maximum visual correction applied per loop.
+     */
+    public static double CAMERA_MAX_CORRECTION_DEG = 8.0;
+
+    /*
+     * Reject detections outside these limits.
+     */
+    public static double CAMERA_MIN_RANGE_IN = 6.0;
+    public static double CAMERA_MAX_RANGE_IN = 120.0;
+
+    public static double CAMERA_MAX_ABS_BEARING_DEG = 45.0;
+
+    /*
+     * Low-pass filter for visual bearing.
+     *
+     * 0.0 = never responds
+     * 1.0 = no filtering
+     */
+    public static double CAMERA_FILTER_ALPHA = 0.35;
+
+    /*
+     * Fusion weighting:
+     *
+     * 0.0 = Pinpoint only
+     * 1.0 = camera-derived estimate only
+     *
+     * The effective weight is also adjusted using camera range.
+     */
+    public static double CAMERA_FUSION_WEIGHT = 0.75;
+
+    /*
+     * Camera alignment tolerance for shooting permission.
+     */
+    public static double CAMERA_SHOOT_TOLERANCE_DEG = 2.0;
+
+    /*
+     * Range-based confidence.
+     *
+     * At or below CAMERA_FULL_WEIGHT_RANGE_IN, the configured fusion
+     * weight is used fully.
+     *
+     * At CAMERA_ZERO_WEIGHT_RANGE_IN, camera weight reaches zero.
+     */
+    public static double CAMERA_FULL_WEIGHT_RANGE_IN = 30.0;
+    public static double CAMERA_ZERO_WEIGHT_RANGE_IN = 100.0;
+
+    private double filteredCameraBearingDeg = 0.0;
+    private boolean cameraBearingPrimed = false;
+
+    // ---------------------------------------------------------------------
+    // Goal compatibility
     // ---------------------------------------------------------------------
 
     public enum Goal {
@@ -81,36 +195,27 @@ public class Turret {
         CUSTOM
     }
 
-    public static double RED_GOAL_X = 0.0;
-    public static double RED_GOAL_Y = 0.0;
+    public static double RED_GOAL_X = Double.NaN;
+    public static double RED_GOAL_Y = Double.NaN;
 
-    public static double BLUE_GOAL_X = 0.0;
-    public static double BLUE_GOAL_Y = 0.0;
+    public static double BLUE_GOAL_X = Double.NaN;
+    public static double BLUE_GOAL_Y = Double.NaN;
 
     private Goal selectedGoal = Goal.CUSTOM;
     private Pose targetPose = null;
 
     // ---------------------------------------------------------------------
-    // Optional velocity lead
-    //
-    // vx/vy must be field-frame inches per second.
-    // VELOCITY_LEAD_GAIN acts as a lead time in seconds.
+    // Aim-source state
     // ---------------------------------------------------------------------
 
-    public static boolean velocityCompensationActive = false;
-    public static double VELOCITY_LEAD_GAIN = 0.3;
+    public enum AimSource {
+        NONE,
+        PINPOINT,
+        FUSED,
+        FIXED
+    }
 
-    // ---------------------------------------------------------------------
-    // Wrap protection near the unreachable robot-front region
-    // ---------------------------------------------------------------------
-
-    public static double BEHIND_HOLD_ENTER_DEG = 25.0;
-    public static double BEHIND_HOLD_EXIT_DEG = 35.0;
-
-    private boolean holdingBehind = false;
-    private int holdSide = 1;
-
-    public static double MIN_AIM_DISTANCE_IN = 1.0;
+    private AimSource currentAimSource = AimSource.NONE;
 
     // ---------------------------------------------------------------------
     // Diagnostics
@@ -137,11 +242,28 @@ public class Turret {
     public static double lastFinalAngleDeg = 0.0;
     public static double lastServoPosition = 0.5;
 
+    public static boolean lastTargetReachable = false;
     public static boolean lastHoldingBehind = false;
     public static int lastHoldSide = 1;
 
     public static String lastSelectedGoal = "CUSTOM";
     public static boolean lastFixedPositionMode = true;
+
+    public static String lastAimSource = "NONE";
+
+    public static boolean lastCameraTargetVisible = false;
+    public static boolean lastCameraTargetValid = false;
+    public static boolean lastCameraAligned = false;
+
+    public static double lastCameraBearingDeg = Double.NaN;
+    public static double lastFilteredCameraBearingDeg = Double.NaN;
+    public static double lastCameraRangeIn = Double.NaN;
+    public static double lastCameraCorrectionDeg = 0.0;
+    public static double lastCameraWeight = 0.0;
+
+    public static double lastPinpointAngleDeg = Double.NaN;
+    public static double lastCameraEstimateAngleDeg = Double.NaN;
+    public static double lastFusedAngleDeg = Double.NaN;
 
     // ---------------------------------------------------------------------
     // Initialization
@@ -154,15 +276,15 @@ public class Turret {
                 TURRET_SERVO_NAME
         );
 
-        turretServo.setDirection(Servo.Direction.FORWARD);
+        turretServo.setDirection(
+                Servo.Direction.FORWARD
+        );
 
-        targetPose = null;
         selectedGoal = Goal.CUSTOM;
+        targetPose = null;
 
-        resetAimState();
+        clearAimDiagnostics();
 
-        // Compatibility with existing autonomous routines.
-        // Unknown alliance does not silently select blue.
         selectAllianceGoal();
 
         setCentre();
@@ -175,9 +297,11 @@ public class Turret {
     public void selectAllianceGoal() {
 
         if (PoseStorage.isRed()) {
+
             selectRedGoal();
 
         } else if (PoseStorage.isBlue()) {
+
             selectBlueGoal();
         }
     }
@@ -188,19 +312,31 @@ public class Turret {
             return;
         }
 
-        double x = goal == Goal.RED
-                ? RED_GOAL_X
-                : BLUE_GOAL_X;
+        double targetX;
+        double targetY;
 
-        double y = goal == Goal.RED
-                ? RED_GOAL_Y
-                : BLUE_GOAL_Y;
+        if (goal == Goal.RED) {
 
-        if (!Double.isFinite(x) || !Double.isFinite(y)) {
+            targetX = RED_GOAL_X;
+            targetY = RED_GOAL_Y;
+
+        } else {
+
+            targetX = BLUE_GOAL_X;
+            targetY = BLUE_GOAL_Y;
+        }
+
+        if (!Double.isFinite(targetX)
+                || !Double.isFinite(targetY)) {
+
             return;
         }
 
-        applyTarget(goal, x, y);
+        applyTarget(
+                goal,
+                targetX,
+                targetY
+        );
     }
 
     public void selectRedGoal() {
@@ -211,34 +347,62 @@ public class Turret {
         selectGoal(Goal.BLUE);
     }
 
+    /**
+     * Supplies an explicit field-coordinate target.
+     *
+     * Pose heading is ignored.
+     */
     public void setTargetPose(Pose pose) {
 
         if (pose == null
                 || !Double.isFinite(pose.x())
                 || !Double.isFinite(pose.y())) {
+
             return;
         }
 
-        applyTarget(Goal.CUSTOM, pose.x(), pose.y());
+        applyTarget(
+                Goal.CUSTOM,
+                pose.x(),
+                pose.y()
+        );
     }
 
-    private void applyTarget(Goal goal, double x, double y) {
+    private void applyTarget(
+            Goal goal,
+            double targetX,
+            double targetY
+    ) {
 
-        boolean changed =
+        boolean targetChanged =
                 selectedGoal != goal
                         || targetPose == null
-                        || Double.compare(targetPose.x(), x) != 0
-                        || Double.compare(targetPose.y(), y) != 0;
+                        || Double.compare(
+                        targetPose.x(),
+                        targetX
+                ) != 0
+                        || Double.compare(
+                        targetPose.y(),
+                        targetY
+                ) != 0;
 
-        if (changed) {
+        if (targetChanged) {
+
             selectedGoal = goal;
-            targetPose = new Pose(x, y, 0.0);
-            resetAimState();
+
+            targetPose = new Pose(
+                    targetX,
+                    targetY,
+                    0.0
+            );
+
+            clearAimDiagnostics();
         }
 
         lastSelectedGoal = selectedGoal.name();
-        lastTargetX = x;
-        lastTargetY = y;
+
+        lastTargetX = targetX;
+        lastTargetY = targetY;
     }
 
     public Goal getSelectedGoal() {
@@ -259,199 +423,977 @@ public class Turret {
     }
 
     public void realignToAllianceGoal() {
+
         selectAllianceGoal();
-        resetAimState();
+        clearAimDiagnostics();
     }
 
     public void realignToSelectedGoal() {
-        resetAimState();
+
+        clearAimDiagnostics();
     }
 
-    private void resetAimState() {
-        holdingBehind = false;
-        holdSide = 1;
+    private void clearAimDiagnostics() {
 
-        lastHoldingBehind = false;
-        lastHoldSide = holdSide;
-
-        // Prevent stale aiming diagnostics being treated as current.
-        lastRelativeAngleDeg = Double.NaN;
-        lastFieldTargetAngleDeg = Double.NaN;
         lastDistanceToTargetIn = Double.NaN;
+
+        lastFieldTargetAngleDeg = Double.NaN;
+        lastRelativeAngleDeg = Double.NaN;
+
+        lastVelocityLeadX = 0.0;
+        lastVelocityLeadY = 0.0;
+
+        lastTargetReachable = false;
+        lastHoldingBehind = false;
+        lastHoldSide = 1;
+
+        currentAimSource = AimSource.NONE;
+        lastAimSource = currentAimSource.name();
+
+        resetCameraBearingFilter();
+        clearCameraDiagnostics();
     }
 
     // ---------------------------------------------------------------------
-    // Field-coordinate aiming
+    // Fused aiming
+    //
+    // Use this method from TeleOp or autonomous when Arducam assistance
+    // is wanted.
+    //
+    // No valid camera detection:
+    // Pinpoint/Pedro-only aiming.
+    //
+    // Valid camera detection:
+    // Pinpoint/Pedro coarse angle fused with visual residual correction.
+    // ---------------------------------------------------------------------
+
+    public void aimTurretFused(
+            Pose robotPose,
+            ArduCam camera,
+            ArduCam.Alliance alliance
+    ) {
+
+        aimTurretFused(
+                robotPose,
+                0.0,
+                0.0,
+                camera,
+                alliance
+        );
+    }
+
+    public void aimTurretFused(
+            Pose robotPose,
+            double velocityX,
+            double velocityY,
+            ArduCam camera,
+            ArduCam.Alliance alliance
+    ) {
+
+        clearCameraDiagnostics();
+
+        AimCalculation pinpointCalculation =
+                calculatePinpointAim(
+                        robotPose,
+                        velocityX,
+                        velocityY
+                );
+
+        if (pinpointCalculation == null) {
+
+            resetCameraBearingFilter();
+            setCentre();
+
+            return;
+        }
+
+        lastPinpointAngleDeg =
+                Math.toDegrees(
+                        pinpointCalculation.requestedAngleRad
+                );
+
+        double finalRequestedAngleRad =
+                pinpointCalculation.requestedAngleRad;
+
+        boolean fusionApplied = false;
+
+        if (CAMERA_FUSION_ENABLED
+                && camera != null
+                && alliance != null
+                && camera.isEnabled()) {
+
+            AprilTagClusterDetection detection =
+                    camera.getActiveCellDetection(
+                            alliance
+                    );
+
+            if (detection == null) {
+
+                detection =
+                        camera.getAnyHiveDetection(
+                                alliance
+                        );
+            }
+
+            if (isValidCameraDetection(detection)) {
+
+                CameraCalculation cameraCalculation =
+                        calculateCameraEstimate(
+                                detection
+                        );
+
+                if (cameraCalculation != null) {
+
+                    /*
+                     * Blend angles using shortest signed angular difference.
+                     */
+                    double differenceRad =
+                            normalizeRadians(
+                                    cameraCalculation.cameraEstimateAngleRad
+                                            - pinpointCalculation.requestedAngleRad
+                            );
+
+                    finalRequestedAngleRad =
+                            normalizeRadians(
+                                    pinpointCalculation.requestedAngleRad
+                                            + differenceRad
+                                            * cameraCalculation.fusionWeight
+                            );
+
+                    fusionApplied = true;
+
+                    lastCameraEstimateAngleDeg =
+                            Math.toDegrees(
+                                    cameraCalculation
+                                            .cameraEstimateAngleRad
+                            );
+
+                    lastCameraWeight =
+                            cameraCalculation.fusionWeight;
+
+                    lastFusedAngleDeg =
+                            Math.toDegrees(
+                                    finalRequestedAngleRad
+                            );
+                }
+            }
+        }
+
+        if (!fusionApplied) {
+
+            resetCameraBearingFilter();
+
+            lastCameraTargetValid = false;
+            lastCameraAligned = false;
+            lastCameraWeight = 0.0;
+
+            lastCameraEstimateAngleDeg =
+                    Double.NaN;
+
+            lastFusedAngleDeg =
+                    lastPinpointAngleDeg;
+        }
+
+        applyAutomaticAngle(
+                finalRequestedAngleRad,
+                fusionApplied
+                        ? AimSource.FUSED
+                        : AimSource.PINPOINT
+        );
+
+        updatePinpointDiagnostics(
+                robotPose,
+                pinpointCalculation
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // Pinpoint/Pedro-only aiming
     // ---------------------------------------------------------------------
 
     public void aimTurret(Pose robotPose) {
-        aimTurret(robotPose, 0.0, 0.0);
+
+        aimTurret(
+                robotPose,
+                0.0,
+                0.0
+        );
     }
 
     public void aimTurret(
             Pose robotPose,
-            double vx,
-            double vy
+            double velocityX,
+            double velocityY
     ) {
 
-        if (turretServo == null) {
+        resetCameraBearingFilter();
+        clearCameraDiagnostics();
+
+        AimCalculation calculation =
+                calculatePinpointAim(
+                        robotPose,
+                        velocityX,
+                        velocityY
+                );
+
+        if (calculation == null) {
+
+            setCentre();
+
             return;
         }
+
+        lastPinpointAngleDeg =
+                Math.toDegrees(
+                        calculation.requestedAngleRad
+                );
+
+        lastFusedAngleDeg =
+                lastPinpointAngleDeg;
+
+        applyAutomaticAngle(
+                calculation.requestedAngleRad,
+                AimSource.PINPOINT
+        );
+
+        updatePinpointDiagnostics(
+                robotPose,
+                calculation
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // Pinpoint/Pedro calculation
+    // ---------------------------------------------------------------------
+
+    private AimCalculation calculatePinpointAim(
+            Pose robotPose,
+            double velocityX,
+            double velocityY
+    ) {
 
         if (!validPose(robotPose)
                 || targetPose == null
                 || !Double.isFinite(TURRET_OFFSET_X_IN)
                 || !Double.isFinite(TURRET_OFFSET_Y_IN)
                 || !Double.isFinite(TURRET_ZERO_OFFSET_DEG)
-                || !Double.isFinite(AIM_GAIN)
-                || !Double.isFinite(AIM_OFFSET)
                 || !Double.isFinite(MIN_AIM_DISTANCE_IN)) {
 
-            setCentre();
-            return;
+            return null;
         }
 
-        double heading = robotPose.heading();
+        double robotHeading =
+                robotPose.heading();
 
-        double cos = Math.cos(heading);
-        double sin = Math.sin(heading);
+        double headingCos =
+                Math.cos(robotHeading);
+
+        double headingSin =
+                Math.sin(robotHeading);
 
         double pivotX =
                 robotPose.x()
-                        + TURRET_OFFSET_X_IN * cos
-                        - TURRET_OFFSET_Y_IN * sin;
+                        + TURRET_OFFSET_X_IN
+                        * headingCos
+                        - TURRET_OFFSET_Y_IN
+                        * headingSin;
 
         double pivotY =
                 robotPose.y()
-                        + TURRET_OFFSET_X_IN * sin
-                        + TURRET_OFFSET_Y_IN * cos;
+                        + TURRET_OFFSET_X_IN
+                        * headingSin
+                        + TURRET_OFFSET_Y_IN
+                        * headingCos;
 
-        double dx = targetPose.x() - pivotX;
-        double dy = targetPose.y() - pivotY;
+        double targetDx =
+                targetPose.x() - pivotX;
+
+        double targetDy =
+                targetPose.y() - pivotY;
+
+        double physicalDistance =
+                Math.hypot(
+                        targetDx,
+                        targetDy
+                );
+
+        double minimumDistance =
+                Math.max(
+                        0.0,
+                        MIN_AIM_DISTANCE_IN
+                );
+
+        if (!Double.isFinite(physicalDistance)
+                || physicalDistance <= minimumDistance) {
+
+            return null;
+        }
 
         double leadX = 0.0;
         double leadY = 0.0;
 
         if (velocityCompensationActive
-                && Double.isFinite(vx)
-                && Double.isFinite(vy)
+                && Double.isFinite(velocityX)
+                && Double.isFinite(velocityY)
                 && Double.isFinite(VELOCITY_LEAD_GAIN)) {
 
-            leadX = -vx * VELOCITY_LEAD_GAIN;
-            leadY = -vy * VELOCITY_LEAD_GAIN;
+            leadX =
+                    -velocityX
+                            * VELOCITY_LEAD_GAIN;
+
+            leadY =
+                    -velocityY
+                            * VELOCITY_LEAD_GAIN;
         }
 
-        double aimDx = dx + leadX;
-        double aimDy = dy + leadY;
+        double aimDx =
+                targetDx + leadX;
 
-        double physicalDistance = Math.hypot(dx, dy);
-        double compensatedDistance = Math.hypot(aimDx, aimDy);
+        double aimDy =
+                targetDy + leadY;
 
-        if (!Double.isFinite(physicalDistance)
-                || !Double.isFinite(compensatedDistance)
-                || compensatedDistance <= Math.max(
-                0.0, MIN_AIM_DISTANCE_IN
-        )) {
+        double compensatedDistance =
+                Math.hypot(
+                        aimDx,
+                        aimDy
+                );
+
+        if (!Double.isFinite(compensatedDistance)
+                || compensatedDistance <= minimumDistance) {
+
+            return null;
+        }
+
+        double fieldTargetAngle =
+                Math.atan2(
+                        aimDy,
+                        aimDx
+                );
+
+        double requestedAngle =
+                normalizeRadians(
+                        fieldTargetAngle
+                                - robotHeading
+                                - Math.toRadians(
+                                TURRET_ZERO_OFFSET_DEG
+                        )
+                );
+
+        if (!Double.isFinite(requestedAngle)) {
+            return null;
+        }
+
+        return new AimCalculation(
+                requestedAngle,
+                fieldTargetAngle,
+                pivotX,
+                pivotY,
+                physicalDistance,
+                leadX,
+                leadY
+        );
+    }
+
+    private void updatePinpointDiagnostics(
+            Pose robotPose,
+            AimCalculation calculation
+    ) {
+
+        lastRobotX =
+                robotPose.x();
+
+        lastRobotY =
+                robotPose.y();
+
+        lastRobotHeadingDeg =
+                normalizeDegrees0To360(
+                        Math.toDegrees(
+                                robotPose.heading()
+                        )
+                );
+
+        lastPivotX =
+                calculation.pivotX;
+
+        lastPivotY =
+                calculation.pivotY;
+
+        lastTargetX =
+                targetPose.x();
+
+        lastTargetY =
+                targetPose.y();
+
+        /*
+         * Camera range is preferred while fused because it is a direct
+         * observation. Otherwise use field-coordinate distance.
+         */
+        if (currentAimSource != AimSource.FUSED
+                || !Double.isFinite(lastCameraRangeIn)) {
+
+            lastDistanceToTargetIn =
+                    calculation.physicalDistance;
+        }
+
+        lastFieldTargetAngleDeg =
+                normalizeDegrees0To360(
+                        Math.toDegrees(
+                                calculation.fieldTargetAngleRad
+                        )
+                );
+
+        lastVelocityLeadX =
+                calculation.leadX;
+
+        lastVelocityLeadY =
+                calculation.leadY;
+
+        lastSelectedGoal =
+                selectedGoal.name();
+    }
+
+    // ---------------------------------------------------------------------
+    // Camera calculation
+    // ---------------------------------------------------------------------
+
+    private CameraCalculation calculateCameraEstimate(
+            AprilTagClusterDetection detection
+    ) {
+
+        if (!isValidCameraDetection(detection)) {
+            return null;
+        }
+
+        double rawBearingDeg =
+                detection.ftcPose.bearing;
+
+        double rangeIn =
+                detection.ftcPose.range;
+
+        double filteredBearingDeg =
+                filterCameraBearing(
+                        rawBearingDeg
+                );
+
+        double errorDeg =
+                CAMERA_BEARING_SIGN
+                        * filteredBearingDeg
+                        + CAMERA_AIM_OFFSET_DEG;
+
+        if (!Double.isFinite(errorDeg)) {
+            return null;
+        }
+
+        double deadband =
+                safeAbsolute(
+                        CAMERA_DEADBAND_DEG,
+                        0.75
+                );
+
+        lastCameraAligned =
+                Math.abs(errorDeg)
+                        <= safeAbsolute(
+                        CAMERA_SHOOT_TOLERANCE_DEG,
+                        2.0
+                );
+
+        if (Math.abs(errorDeg) <= deadband) {
+
+            errorDeg = 0.0;
+        }
+
+        double correctionDeg =
+                errorDeg
+                        * CAMERA_CORRECTION_GAIN;
+
+        if (!Double.isFinite(correctionDeg)) {
+            return null;
+        }
+
+        double correctionLimit =
+                safeAbsolute(
+                        CAMERA_MAX_CORRECTION_DEG,
+                        8.0
+                );
+
+        correctionDeg =
+                clamp(
+                        correctionDeg,
+                        -correctionLimit,
+                        correctionLimit
+                );
+
+        double currentAngleRad =
+                Math.toRadians(
+                        servoPositionToAngleDeg(
+                                getServoPosition()
+                        )
+                );
+
+        double cameraEstimateAngleRad =
+                normalizeRadians(
+                        currentAngleRad
+                                + Math.toRadians(
+                                correctionDeg
+                        )
+                );
+
+        double fusionWeight =
+                calculateCameraWeight(
+                        rangeIn
+                );
+
+        if (!Double.isFinite(cameraEstimateAngleRad)
+                || !Double.isFinite(fusionWeight)) {
+
+            return null;
+        }
+
+        lastCameraTargetVisible = true;
+        lastCameraTargetValid = true;
+
+        lastCameraBearingDeg =
+                rawBearingDeg;
+
+        lastFilteredCameraBearingDeg =
+                filteredBearingDeg;
+
+        lastCameraRangeIn =
+                rangeIn;
+
+        lastCameraCorrectionDeg =
+                correctionDeg;
+
+        lastDistanceToTargetIn =
+                rangeIn;
+
+        return new CameraCalculation(
+                cameraEstimateAngleRad,
+                fusionWeight
+        );
+    }
+
+    private boolean isValidCameraDetection(
+            AprilTagClusterDetection detection
+    ) {
+
+        if (detection == null) {
+            return false;
+        }
+
+        lastCameraTargetVisible = true;
+
+        if (detection.ftcPose == null) {
+            return false;
+        }
+
+        double bearing =
+                detection.ftcPose.bearing;
+
+        double range =
+                detection.ftcPose.range;
+
+        lastCameraBearingDeg =
+                bearing;
+
+        lastCameraRangeIn =
+                range;
+
+        if (!Double.isFinite(bearing)
+                || !Double.isFinite(range)) {
+
+            return false;
+        }
+
+        double minimumRange =
+                Double.isFinite(CAMERA_MIN_RANGE_IN)
+                        ? Math.max(
+                        0.0,
+                        CAMERA_MIN_RANGE_IN
+                )
+                        : 0.0;
+
+        double maximumRange =
+                Double.isFinite(CAMERA_MAX_RANGE_IN)
+                        ? Math.max(
+                        minimumRange,
+                        CAMERA_MAX_RANGE_IN
+                )
+                        : 120.0;
+
+        double maximumBearing =
+                safeAbsolute(
+                        CAMERA_MAX_ABS_BEARING_DEG,
+                        45.0
+                );
+
+        return range >= minimumRange
+                && range <= maximumRange
+                && Math.abs(bearing)
+                <= maximumBearing;
+    }
+
+    private double filterCameraBearing(
+            double bearingDeg
+    ) {
+
+        if (!cameraBearingPrimed) {
+
+            filteredCameraBearingDeg =
+                    bearingDeg;
+
+            cameraBearingPrimed = true;
+
+            return filteredCameraBearingDeg;
+        }
+
+        double alpha =
+                Double.isFinite(CAMERA_FILTER_ALPHA)
+                        ? clamp(
+                        CAMERA_FILTER_ALPHA,
+                        0.0,
+                        1.0
+                )
+                        : 0.35;
+
+        filteredCameraBearingDeg +=
+                alpha
+                        * (bearingDeg
+                        - filteredCameraBearingDeg);
+
+        return filteredCameraBearingDeg;
+    }
+
+    private double calculateCameraWeight(
+            double rangeIn
+    ) {
+
+        double configuredWeight =
+                Double.isFinite(CAMERA_FUSION_WEIGHT)
+                        ? clamp(
+                        CAMERA_FUSION_WEIGHT,
+                        0.0,
+                        1.0
+                )
+                        : 0.75;
+
+        double fullWeightRange =
+                Double.isFinite(
+                        CAMERA_FULL_WEIGHT_RANGE_IN
+                )
+                        ? Math.max(
+                        0.0,
+                        CAMERA_FULL_WEIGHT_RANGE_IN
+                )
+                        : 30.0;
+
+        double zeroWeightRange =
+                Double.isFinite(
+                        CAMERA_ZERO_WEIGHT_RANGE_IN
+                )
+                        ? Math.max(
+                        fullWeightRange + 1.0,
+                        CAMERA_ZERO_WEIGHT_RANGE_IN
+                )
+                        : 100.0;
+
+        if (rangeIn <= fullWeightRange) {
+            return configuredWeight;
+        }
+
+        if (rangeIn >= zeroWeightRange) {
+            return 0.0;
+        }
+
+        double rangeConfidence =
+                1.0
+                        - (rangeIn - fullWeightRange)
+                        / (zeroWeightRange - fullWeightRange);
+
+        return configuredWeight
+                * clamp(
+                rangeConfidence,
+                0.0,
+                1.0
+        );
+    }
+
+    private void resetCameraBearingFilter() {
+
+        filteredCameraBearingDeg = 0.0;
+        cameraBearingPrimed = false;
+    }
+
+    private void clearCameraDiagnostics() {
+
+        lastCameraTargetVisible = false;
+        lastCameraTargetValid = false;
+        lastCameraAligned = false;
+
+        lastCameraBearingDeg = Double.NaN;
+        lastFilteredCameraBearingDeg = Double.NaN;
+        lastCameraRangeIn = Double.NaN;
+
+        lastCameraCorrectionDeg = 0.0;
+        lastCameraWeight = 0.0;
+
+        lastCameraEstimateAngleDeg = Double.NaN;
+    }
+
+    // ---------------------------------------------------------------------
+    // Automatic command application
+    // ---------------------------------------------------------------------
+
+    private void applyAutomaticAngle(
+            double requestedAngleRad,
+            AimSource aimSource
+    ) {
+
+        if (turretServo == null
+                || !Double.isFinite(requestedAngleRad)
+                || !Double.isFinite(AIM_GAIN)
+                || !Double.isFinite(AIM_OFFSET)) {
 
             setCentre();
+
+            return;
+        }
+
+        double gainedAngle =
+                requestedAngleRad
+                        * AIM_GAIN;
+
+        if (!Double.isFinite(gainedAngle)) {
+
+            setCentre();
+
+            return;
+        }
+
+        double maximumAngle =
+                getAutoAimMaxAngleRad();
+
+        if (!Double.isFinite(maximumAngle)
+                || maximumAngle <= 0.0) {
+
+            setCentre();
+
             return;
         }
 
         lastFixedPositionMode = false;
 
-        lastRobotX = robotPose.x();
-        lastRobotY = robotPose.y();
-        lastRobotHeadingDeg = Math.toDegrees(heading);
+        lastRelativeAngleDeg =
+                Math.toDegrees(
+                        requestedAngleRad
+                );
 
-        lastPivotX = pivotX;
-        lastPivotY = pivotY;
+        lastTargetReachable =
+                Math.abs(gainedAngle)
+                        <= maximumAngle;
 
-        lastTargetX = targetPose.x();
-        lastTargetY = targetPose.y();
+        lastHoldingBehind =
+                !lastTargetReachable;
 
-        lastDistanceToTargetIn = physicalDistance;
+        if (gainedAngle > 0.0) {
 
-        lastVelocityLeadX = leadX;
-        lastVelocityLeadY = leadY;
+            lastHoldSide = 1;
 
-        double fieldAngle = Math.atan2(aimDy, aimDx);
+        } else if (gainedAngle < 0.0) {
 
-        double relativeAngle = normalizeRadians(
-                fieldAngle
-                        - heading
-                        - Math.toRadians(TURRET_ZERO_OFFSET_DEG)
-        );
-
-        lastFieldTargetAngleDeg = Math.toDegrees(fieldAngle);
-        lastRelativeAngleDeg = Math.toDegrees(relativeAngle);
-
-        double commandedAngle = applyBehindHold(relativeAngle);
-
-        if (!holdingBehind) {
-            commandedAngle *= AIM_GAIN;
+            lastHoldSide = -1;
         }
 
-        commandedAngle = clamp(
-                commandedAngle,
-                MIN_TURRET_ANGLE_RAD,
-                MAX_TURRET_ANGLE_RAD
+        double commandedAngle =
+                clamp(
+                        gainedAngle,
+                        -maximumAngle,
+                        maximumAngle
+                );
+
+        double servoPosition =
+                angleToServoPosition(
+                        commandedAngle
+                ) + AIM_OFFSET;
+
+        servoPosition =
+                clampToServoLimits(
+                        servoPosition
+                );
+
+        turretServo.setPosition(
+                servoPosition
         );
 
-        double servoPosition = clampToServoLimits(
-                angleToServoPosition(commandedAngle) + AIM_OFFSET
+        lastFinalAngleDeg =
+                Math.toDegrees(
+                        commandedAngle
+                );
+
+        lastServoPosition =
+                servoPosition;
+
+        currentAimSource =
+                aimSource;
+
+        lastAimSource =
+                currentAimSource.name();
+    }
+
+    // ---------------------------------------------------------------------
+    // Reachability and alignment
+    // ---------------------------------------------------------------------
+
+    public boolean isTargetReachable() {
+
+        return lastTargetReachable
+                && !lastFixedPositionMode
+                && Double.isFinite(
+                lastRelativeAngleDeg
+        )
+                && Double.isFinite(
+                lastFinalAngleDeg
         );
+    }
 
-        turretServo.setPosition(servoPosition);
+    /**
+     * Returns true when fused camera bearing is within the configured
+     * shooting tolerance.
+     *
+     * False when the camera is not contributing.
+     */
+    public boolean isCameraAligned() {
 
-        lastFinalAngleDeg = Math.toDegrees(commandedAngle);
-        lastServoPosition = servoPosition;
+        return currentAimSource == AimSource.FUSED
+                && lastCameraTargetValid
+                && lastCameraAligned;
+    }
 
-        lastHoldingBehind = holdingBehind;
-        lastHoldSide = holdSide;
-        lastSelectedGoal = selectedGoal.name();
+    /**
+     * Suitable shooting gate:
+     *
+     * Pinpoint-only aiming is accepted when no camera target is visible.
+     *
+     * If camera fusion is active, the camera must also be aligned.
+     */
+    public boolean isAimReady() {
+
+        if (!isTargetReachable()) {
+            return false;
+        }
+
+        if (currentAimSource == AimSource.FUSED) {
+            return isCameraAligned();
+        }
+
+        return currentAimSource == AimSource.PINPOINT;
+    }
+
+    public AimSource getAimSource() {
+        return currentAimSource;
+    }
+
+    public boolean isUsingCameraFusion() {
+        return currentAimSource == AimSource.FUSED;
+    }
+
+    public boolean isUsingPinpointAim() {
+        return currentAimSource == AimSource.PINPOINT;
+    }
+
+    // ---------------------------------------------------------------------
+    // Automatic aiming limit
+    // ---------------------------------------------------------------------
+
+    private double getAutoAimMaxAngleDeg() {
+
+        if (!Double.isFinite(
+                AUTO_AIM_MAX_ANGLE_DEG
+        )) {
+
+            return 75.0;
+        }
+
+        return clamp(
+                Math.abs(
+                        AUTO_AIM_MAX_ANGLE_DEG
+                ),
+                0.0,
+                90.0
+        );
+    }
+
+    private double getAutoAimMaxAngleRad() {
+
+        return Math.toRadians(
+                getAutoAimMaxAngleDeg()
+        );
     }
 
     // ---------------------------------------------------------------------
     // Fixed servo commands
+    //
+    // These bypass the automatic +/-75-degree restriction.
     // ---------------------------------------------------------------------
 
-    public void setFixedServoPosition(double position) {
+    public void setFixedServoPosition(
+            double position
+    ) {
 
-        if (turretServo == null || !Double.isFinite(position)) {
+        if (turretServo == null
+                || !Double.isFinite(position)) {
+
             return;
         }
 
-        double clipped = clampToServoLimits(position);
+        double clippedPosition =
+                clampToServoLimits(
+                        position
+                );
 
-        turretServo.setPosition(clipped);
+        turretServo.setPosition(
+                clippedPosition
+        );
 
         lastFixedPositionMode = true;
-        lastServoPosition = clipped;
-
-        double mappingSign = REVERSE_AIM_MAPPING ? -1.0 : 1.0;
+        lastServoPosition = clippedPosition;
 
         lastFinalAngleDeg =
-                mappingSign * (clipped - centrePosition()) * 180.0;
+                servoPositionToAngleDeg(
+                        clippedPosition
+                );
 
-        holdingBehind = false;
+        lastTargetReachable = false;
+        lastHoldingBehind = false;
 
         if (lastFinalAngleDeg > 0.0) {
-            holdSide = 1;
+
+            lastHoldSide = 1;
 
         } else if (lastFinalAngleDeg < 0.0) {
-            holdSide = -1;
-        }
 
-        lastHoldingBehind = false;
-        lastHoldSide = holdSide;
+            lastHoldSide = -1;
+        }
 
         lastRelativeAngleDeg = Double.NaN;
         lastFieldTargetAngleDeg = Double.NaN;
+
+        currentAimSource = AimSource.FIXED;
+        lastAimSource = currentAimSource.name();
+
+        resetCameraBearingFilter();
+        clearCameraDiagnostics();
     }
 
     public void setCentre() {
-        setFixedServoPosition(centrePosition());
-        resetAimState();
+
+        setFixedServoPosition(
+                centrePosition()
+        );
+
+        lastFinalAngleDeg = 0.0;
+        lastServoPosition = centrePosition();
+        lastFixedPositionMode = true;
     }
 
     public void setForward() {
@@ -459,101 +1401,109 @@ public class Turret {
     }
 
     public void setFullRight() {
-        setFixedServoPosition(RIGHT_SERVO_LIMIT);
+
+        setFixedServoPosition(
+                RIGHT_SERVO_LIMIT
+        );
     }
 
     public void setFullLeft() {
-        setFixedServoPosition(LEFT_SERVO_LIMIT);
-    }
 
-    // ---------------------------------------------------------------------
-    // Wrap-region hysteresis
-    // ---------------------------------------------------------------------
-
-    private double applyBehindHold(double relativeAngle) {
-
-        double absoluteAngle = Math.abs(relativeAngle);
-
-        double enterDegrees = Double.isFinite(BEHIND_HOLD_ENTER_DEG)
-                ? clamp(BEHIND_HOLD_ENTER_DEG, 0.0, 89.0)
-                : 25.0;
-
-        double exitDegrees = Double.isFinite(BEHIND_HOLD_EXIT_DEG)
-                ? clamp(BEHIND_HOLD_EXIT_DEG, enterDegrees, 89.0)
-                : Math.max(35.0, enterDegrees);
-
-        double enterThreshold =
-                Math.PI - Math.toRadians(enterDegrees);
-
-        double exitThreshold =
-                Math.PI - Math.toRadians(exitDegrees);
-
-        if (!holdingBehind && absoluteAngle >= enterThreshold) {
-
-            if (relativeAngle > 0.0) {
-                holdSide = 1;
-
-            } else if (relativeAngle < 0.0) {
-                holdSide = -1;
-            }
-
-            holdingBehind = true;
-        }
-
-        if (holdingBehind && absoluteAngle <= exitThreshold) {
-            holdingBehind = false;
-        }
-
-        if (holdingBehind) {
-            return holdSide > 0
-                    ? MAX_TURRET_ANGLE_RAD
-                    : MIN_TURRET_ANGLE_RAD;
-        }
-
-        if (absoluteAngle > Math.toRadians(2.0)) {
-            holdSide = relativeAngle >= 0.0 ? 1 : -1;
-        }
-
-        return relativeAngle;
+        setFixedServoPosition(
+                LEFT_SERVO_LIMIT
+        );
     }
 
     // ---------------------------------------------------------------------
     // Servo mapping
     // ---------------------------------------------------------------------
 
-    private double angleToServoPosition(double angleRad) {
+    private double angleToServoPosition(
+            double angleRadians
+    ) {
 
-        double mappingSign = REVERSE_AIM_MAPPING ? -1.0 : 1.0;
+        double mappingSign =
+                REVERSE_AIM_MAPPING
+                        ? -1.0
+                        : 1.0;
 
         return centrePosition()
-                + mappingSign * Math.toDegrees(angleRad) / 180.0;
+                + mappingSign
+                * Math.toDegrees(
+                angleRadians
+        )
+                / 180.0;
     }
 
-    private double clampToServoLimits(double position) {
+    private double servoPositionToAngleDeg(
+            double servoPosition
+    ) {
 
-        double right = Double.isFinite(RIGHT_SERVO_LIMIT)
-                ? clamp(RIGHT_SERVO_LIMIT, 0.0, 1.0)
-                : 0.0;
+        double mappingSign =
+                REVERSE_AIM_MAPPING
+                        ? -1.0
+                        : 1.0;
 
-        double left = Double.isFinite(LEFT_SERVO_LIMIT)
-                ? clamp(LEFT_SERVO_LIMIT, 0.0, 1.0)
-                : 1.0;
+        return mappingSign
+                * (servoPosition
+                - centrePosition())
+                * 180.0;
+    }
+
+    private double clampToServoLimits(
+            double position
+    ) {
+
+        double rightLimit =
+                Double.isFinite(
+                        RIGHT_SERVO_LIMIT
+                )
+                        ? clamp(
+                        RIGHT_SERVO_LIMIT,
+                        0.0,
+                        1.0
+                )
+                        : 0.0;
+
+        double leftLimit =
+                Double.isFinite(
+                        LEFT_SERVO_LIMIT
+                )
+                        ? clamp(
+                        LEFT_SERVO_LIMIT,
+                        0.0,
+                        1.0
+                )
+                        : 1.0;
 
         return clamp(
                 position,
-                Math.min(right, left),
-                Math.max(right, left)
+                Math.min(
+                        rightLimit,
+                        leftLimit
+                ),
+                Math.max(
+                        rightLimit,
+                        leftLimit
+                )
         );
     }
 
     private static double centrePosition() {
-        return Double.isFinite(SERVO_CENTER)
-                ? clamp(SERVO_CENTER, 0.0, 1.0)
+
+        return Double.isFinite(
+                SERVO_CENTER
+        )
+                ? clamp(
+                SERVO_CENTER,
+                0.0,
+                1.0
+        )
                 : 0.5;
     }
 
     // ---------------------------------------------------------------------
-    // Status and compatibility
+    // Status
     // ---------------------------------------------------------------------
 
     public double getDistanceToTarget() {
@@ -561,13 +1511,14 @@ public class Turret {
     }
 
     public double getServoPosition() {
+
         return turretServo == null
                 ? lastServoPosition
                 : turretServo.getPosition();
     }
 
     public boolean isHoldingBehind() {
-        return holdingBehind;
+        return lastHoldingBehind;
     }
 
     public boolean isFixedPositionMode() {
@@ -579,18 +1530,113 @@ public class Turret {
     }
 
     // ---------------------------------------------------------------------
+    // Internal calculation records
+    // ---------------------------------------------------------------------
+
+    private static class AimCalculation {
+
+        final double requestedAngleRad;
+        final double fieldTargetAngleRad;
+
+        final double pivotX;
+        final double pivotY;
+
+        final double physicalDistance;
+
+        final double leadX;
+        final double leadY;
+
+        AimCalculation(
+                double requestedAngleRad,
+                double fieldTargetAngleRad,
+                double pivotX,
+                double pivotY,
+                double physicalDistance,
+                double leadX,
+                double leadY
+        ) {
+
+            this.requestedAngleRad =
+                    requestedAngleRad;
+
+            this.fieldTargetAngleRad =
+                    fieldTargetAngleRad;
+
+            this.pivotX = pivotX;
+            this.pivotY = pivotY;
+
+            this.physicalDistance =
+                    physicalDistance;
+
+            this.leadX = leadX;
+            this.leadY = leadY;
+        }
+    }
+
+    private static class CameraCalculation {
+
+        final double cameraEstimateAngleRad;
+        final double fusionWeight;
+
+        CameraCalculation(
+                double cameraEstimateAngleRad,
+                double fusionWeight
+        ) {
+
+            this.cameraEstimateAngleRad =
+                    cameraEstimateAngleRad;
+
+            this.fusionWeight =
+                    fusionWeight;
+        }
+    }
+
+    // ---------------------------------------------------------------------
     // Utilities
     // ---------------------------------------------------------------------
 
     private boolean validPose(Pose pose) {
+
         return pose != null
                 && Double.isFinite(pose.x())
                 && Double.isFinite(pose.y())
-                && Double.isFinite(pose.heading());
+                && Double.isFinite(
+                pose.heading()
+        );
     }
 
-    private static double normalizeRadians(double angle) {
-        return Math.atan2(Math.sin(angle), Math.cos(angle));
+    private static double normalizeRadians(
+            double angle
+    ) {
+
+        return Math.atan2(
+                Math.sin(angle),
+                Math.cos(angle)
+        );
+    }
+
+    private static double normalizeDegrees0To360(
+            double angleDegrees
+    ) {
+
+        double normalized =
+                angleDegrees % 360.0;
+
+        if (normalized < 0.0) {
+            normalized += 360.0;
+        }
+
+        return normalized;
+    }
+
+    private static double safeAbsolute(
+            double value,
+            double fallback
+    ) {
+
+        return Double.isFinite(value)
+                ? Math.abs(value)
+                : Math.abs(fallback);
     }
 
     private static double clamp(
@@ -598,6 +1644,13 @@ public class Turret {
             double minimum,
             double maximum
     ) {
-        return Math.max(minimum, Math.min(maximum, value));
+
+        return Math.max(
+                minimum,
+                Math.min(
+                        maximum,
+                        value
+                )
+        );
     }
 }

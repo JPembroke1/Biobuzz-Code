@@ -12,200 +12,288 @@ import org.firstinspires.ftc.robotcore.external.function.Continuation;
 import org.firstinspires.ftc.robotcore.external.hardware.camera.WebcamName;
 import org.firstinspires.ftc.robotcore.external.stream.CameraStreamSource;
 import org.firstinspires.ftc.robotcore.internal.camera.calibration.CameraCalibration;
+
 import org.firstinspires.ftc.vision.VisionPortal;
 import org.firstinspires.ftc.vision.VisionProcessor;
+
+import org.firstinspires.ftc.vision.apriltag.AprilTagClusterDetection;
 import org.firstinspires.ftc.vision.apriltag.AprilTagDetection;
+import org.firstinspires.ftc.vision.apriltag.AprilTagGameDatabase;
+import org.firstinspires.ftc.vision.apriltag.AprilTagLibrary;
 import org.firstinspires.ftc.vision.apriltag.AprilTagProcessor;
+import org.firstinspires.ftc.vision.apriltag.AprilTagSingleDetection;
+
 import org.opencv.android.Utils;
 import org.opencv.core.Mat;
 
-import org.firstinspires.ftc.vision.apriltag.AprilTagGameDatabase;
-import java.util.HashMap;
-import java.util.Map;
-
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * Wraps an Arducam (or any UVC-compatible webcam) + AprilTagProcessor + VisionPortal,
- * with optional live streaming to the Panels dashboard, into one reusable subsystem class.
+ * SDK 12 Arducam / VisionPortal subsystem for BIOBUZZ.
  *
- * Usage:
+ * Features:
  *
- *   camera = new ArduCam(hardwareMap, "Webcam 1")
- *           .setResolution(640, 480);
- *   camera.init();
- *   camera.streamToPanels(); // optional — call after init() to preview in Panels
+ * - Official BIOBUZZ AprilTag library
+ * - SDK 12 cluster and single-tag handling
+ * - Official HIVE member-tag ranges 30 through 45
+ * - HIVE alliance and side identification
+ * - Immediate HIVE visibility
+ * - Debounced HIVE state
+ * - Latched tip detection
+ * - Turret fusion detection access
+ * - Optional Panels streaming
  *
- *   waitForStart();
- *   while (opModeIsActive()) {
- *       AprilTagDetection tag = camera.getDetection(DESIRED_TAG_ID);
- *       ...
- *   }
+ * SDK 12 notes:
  *
- *   camera.close();
+ * AprilTagDetection is the shared base type.
+ *
+ * AprilTagSingleDetection contains:
+ * - id
+ * - single-tag metadata
+ *
+ * AprilTagClusterDetection contains:
+ * - cluster metadata
+ * - cluster name
+ *
+ * ftcPose is available through the base detection type.
  */
 public class ArduCam {
 
-    /**
-     * Bridges VisionPortal frames to the Panels dashboard (and to any other consumer of
-     * CameraStreamSource, like FTC Dashboard). Keeps the latest frame as a Bitmap.
-     */
-    private static class PanelsStreamProcessor implements VisionProcessor, CameraStreamSource {
+    // ---------------------------------------------------------------------
+    // Panels camera streaming
+    // ---------------------------------------------------------------------
+
+    private static class PanelsStreamProcessor
+            implements VisionProcessor, CameraStreamSource {
+
         private final AtomicReference<Bitmap> lastFrame =
-                new AtomicReference<>(Bitmap.createBitmap(1, 1, Bitmap.Config.RGB_565));
+                new AtomicReference<>(
+                        Bitmap.createBitmap(
+                                1,
+                                1,
+                                Bitmap.Config.RGB_565
+                        )
+                );
 
         @Override
-        public void init(int width, int height, CameraCalibration calibration) {
-            lastFrame.set(Bitmap.createBitmap(width, height, Bitmap.Config.RGB_565));
+        public void init(
+                int width,
+                int height,
+                CameraCalibration calibration
+        ) {
+
+            lastFrame.set(
+                    Bitmap.createBitmap(
+                            width,
+                            height,
+                            Bitmap.Config.RGB_565
+                    )
+            );
         }
 
         @Override
-        public Object processFrame(Mat frame, long captureTimeNanos) {
-            Bitmap b = Bitmap.createBitmap(frame.width(), frame.height(), Bitmap.Config.RGB_565);
-            Utils.matToBitmap(frame, b);
-            lastFrame.set(b);
+        public Object processFrame(
+                Mat frame,
+                long captureTimeNanos
+        ) {
+
+            Bitmap bitmap =
+                    Bitmap.createBitmap(
+                            frame.width(),
+                            frame.height(),
+                            Bitmap.Config.RGB_565
+                    );
+
+            Utils.matToBitmap(
+                    frame,
+                    bitmap
+            );
+
+            lastFrame.set(bitmap);
+
             return null;
         }
 
         @Override
-        public void onDrawFrame(Canvas canvas, int onscreenWidth, int onscreenHeight,
-                                float scaleBmpPxToCanvasPx, float scaleCanvasDensity, Object userContext) {
-            // No overlay drawing needed for a plain stream preview.
+        public void onDrawFrame(
+                Canvas canvas,
+                int onscreenWidth,
+                int onscreenHeight,
+                float scaleBmpPxToCanvasPx,
+                float scaleCanvasDensity,
+                Object userContext
+        ) {
+            // No custom overlay.
         }
 
         @Override
-        public void getFrameBitmap(Continuation<? extends Consumer<Bitmap>> continuation) {
-            continuation.dispatch(bitmapConsumer -> bitmapConsumer.accept(lastFrame.get()));
+        public void getFrameBitmap(
+                Continuation<? extends Consumer<Bitmap>>
+                        continuation
+        ) {
+
+            continuation.dispatch(
+                    bitmapConsumer ->
+                            bitmapConsumer.accept(
+                                    lastFrame.get()
+                            )
+            );
         }
     }
 
-    public enum Alliance { RED, BLUE }
-    public enum HiveSide { AUDIENCE, FAR }
+    // ---------------------------------------------------------------------
+    // HIVE definitions
+    // ---------------------------------------------------------------------
 
-    public enum HiveState { UP, DOWN, UNKNOWN }
+    public enum Alliance {
+        RED,
+        BLUE
+    }
 
-    private static final int FRAMES_TO_CONFIRM = 5;
-    private HiveState confirmedState = HiveState.UNKNOWN;
-    private HiveState candidateState = HiveState.UNKNOWN;
-    private int candidateCount = 0;
+    public enum HiveSide {
+        AUDIENCE,
+        FAR
+    }
+
+    public enum HiveState {
+        UP,
+        DOWN,
+        UNKNOWN
+    }
 
     public static class HiveCell {
+
         public final Alliance alliance;
         public final HiveSide side;
-        public HiveCell(Alliance alliance, HiveSide side) {
+
+        public HiveCell(
+                Alliance alliance,
+                HiveSide side
+        ) {
+
             this.alliance = alliance;
             this.side = side;
         }
+
         @Override
         public String toString() {
-            return alliance + "_" + side;
+
+            return alliance
+                    + "_"
+                    + side;
         }
     }
 
-    // Fill these in from Figure 9-17 / AprilTagGameDatabase — each CELL's
-    // cluster is 4 tag IDs, but any one of the 4 is enough to identify the cell.
-    private static final Map<Integer, HiveCell> HIVE_CELL_TAGS = new HashMap<>();
-    static {
-        HIVE_CELL_TAGS.put(/* TAG_ID */ 30, new HiveCell(Alliance.RED,  HiveSide.FAR));
-        HIVE_CELL_TAGS.put(/* TAG_ID */ 34, new HiveCell(Alliance.RED,  HiveSide.AUDIENCE));
-        HIVE_CELL_TAGS.put(/* TAG_ID */ 38, new HiveCell(Alliance.BLUE, HiveSide.AUDIENCE));
-        HIVE_CELL_TAGS.put(/* TAG_ID */ 42, new HiveCell(Alliance.BLUE, HiveSide.FAR));
-        // repeat for the other 3 tag IDs in each cluster if you want redundancy
-    }
+    // ---------------------------------------------------------------------
+    // Official BIOBUZZ HIVE member-tag ranges
+    //
+    // Each CELL contains one cluster of four 3.25-inch 36h11 tags.
+    // ---------------------------------------------------------------------
 
-    public List<AprilTagDetection> getHiveDetections() {
-        List<AprilTagDetection> hiveDetections = new java.util.ArrayList<>();
-        for (AprilTagDetection d : getDetections()) {
-            if (d.metadata != null && HIVE_CELL_TAGS.containsKey(d.id)) {
-                hiveDetections.add(d);
-            }
+    public static final int RED_FAR_TAG_MIN = 30;
+    public static final int RED_FAR_TAG_MAX = 33;
+
+    public static final int RED_AUDIENCE_TAG_MIN = 34;
+    public static final int RED_AUDIENCE_TAG_MAX = 37;
+
+    public static final int BLUE_AUDIENCE_TAG_MIN = 38;
+    public static final int BLUE_AUDIENCE_TAG_MAX = 41;
+
+    public static final int BLUE_FAR_TAG_MIN = 42;
+    public static final int BLUE_FAR_TAG_MAX = 45;
+
+    /**
+     * Converts a BIOBUZZ HIVE member-tag ID into its CELL identity.
+     */
+    public static HiveCell getHiveCellFromTagId(
+            int tagId
+    ) {
+
+        if (tagId >= RED_FAR_TAG_MIN
+                && tagId <= RED_FAR_TAG_MAX) {
+
+            return new HiveCell(
+                    Alliance.RED,
+                    HiveSide.FAR
+            );
         }
-        return hiveDetections;
-    }
 
-    public HiveCell getActiveCell(Alliance alliance) {
-        HiveCell best = null;
-        double bestPitch = Double.MAX_VALUE;
+        if (tagId >= RED_AUDIENCE_TAG_MIN
+                && tagId <= RED_AUDIENCE_TAG_MAX) {
 
-        for (AprilTagDetection d : getHiveDetections()) {
-            HiveCell cell = HIVE_CELL_TAGS.get(d.id);
-            if (cell.alliance != alliance) continue;
-
-            double pitch = Math.abs(d.ftcPose.pitch);
-            if (pitch < UP_CELL_PITCH_THRESHOLD_DEG && pitch < bestPitch) {
-                bestPitch = pitch;
-                best = cell;
-            }
+            return new HiveCell(
+                    Alliance.RED,
+                    HiveSide.AUDIENCE
+            );
         }
-        return best;
-    }
 
-    public AprilTagDetection getActiveCellDetection(Alliance alliance) {
-        for (AprilTagDetection d : getHiveDetections()) {
-            HiveCell cell = HIVE_CELL_TAGS.get(d.id);
-            if (cell.alliance == alliance
-                    && Math.abs(d.ftcPose.pitch) < UP_CELL_PITCH_THRESHOLD_DEG) {
-                return d;
-            }
+        if (tagId >= BLUE_AUDIENCE_TAG_MIN
+                && tagId <= BLUE_AUDIENCE_TAG_MAX) {
+
+            return new HiveCell(
+                    Alliance.BLUE,
+                    HiveSide.AUDIENCE
+            );
         }
+
+        if (tagId >= BLUE_FAR_TAG_MIN
+                && tagId <= BLUE_FAR_TAG_MAX) {
+
+            return new HiveCell(
+                    Alliance.BLUE,
+                    HiveSide.FAR
+            );
+        }
+
         return null;
     }
 
-    /** Raw single-frame read: UP, DOWN (hive tags seen but tilted), or UNKNOWN (no hive tags seen). */
-    private HiveState readRawState(Alliance alliance) {
-        boolean sawAny = false;
-        for (AprilTagDetection d : getHiveDetections()) {
-            HiveCell cell = HIVE_CELL_TAGS.get(d.id);
-            if (cell.alliance != alliance) continue;
-            sawAny = true;
-            if (Math.abs(d.ftcPose.pitch) < UP_CELL_PITCH_THRESHOLD_DEG) {
-                return HiveState.UP;
-            }
-        }
-        return sawAny ? HiveState.DOWN : HiveState.UNKNOWN;
+    public static boolean isHiveMemberTag(
+            int tagId
+    ) {
+
+        return getHiveCellFromTagId(tagId) != null;
     }
 
-    /** Call once per loop iteration. Returns a debounced state. */
-    public HiveState updateHiveState(Alliance alliance) {
-        HiveState raw = readRawState(alliance);
-        if (raw == candidateState) {
-            candidateCount++;
-        } else {
-            candidateState = raw;
-            candidateCount = 1;
-        }
-        // UNKNOWN never overwrites a confirmed UP/DOWN, so a blocked view doesn't wipe your last good reading.
-        if (candidateCount >= FRAMES_TO_CONFIRM && candidateState != HiveState.UNKNOWN) {
-            confirmedState = candidateState;
-        }
-        return confirmedState;
-    }
+    // ---------------------------------------------------------------------
+    // HIVE configuration
+    // ---------------------------------------------------------------------
 
-    public HiveState getHiveState() { return confirmedState; }
+    public static int HIVE_STATE_FRAMES_TO_CONFIRM = 5;
+    public static int TIP_FRAMES_TO_CONFIRM = 3;
 
-    private boolean enabled = true;
+    /*
+     * Team-calibrated thresholds.
+     *
+     * Verify actual pitch/roll telemetry with your turret-mounted camera.
+     */
+    public static double UP_CELL_PITCH_THRESHOLD_DEG = 35.0;
+    public static double TIPPED_PITCH_THRESHOLD_DEG = 35.0;
 
-    public void setEnabled(boolean enabled) {
-        this.enabled = enabled;
-        if (visionPortal != null) {
-            visionPortal.setProcessorEnabled(aprilTag, enabled);
-        }
-    }
+    // ---------------------------------------------------------------------
+    // HIVE state
+    // ---------------------------------------------------------------------
 
-    public boolean isEnabled() { return enabled; }
+    private HiveState confirmedState =
+            HiveState.UNKNOWN;
 
-    /** Any visible hive tag for this alliance, for turret tracking regardless of up/down. */
-    public AprilTagDetection getAnyHiveDetection(Alliance alliance) {
-        AprilTagDetection best = null;
-        for (AprilTagDetection d : getHiveDetections()) {
-            if (HIVE_CELL_TAGS.get(d.id).alliance != alliance) continue;
-            if (best == null || d.ftcPose.range < best.ftcPose.range) best = d;
-        }
-        return best;
-    }
+    private HiveState candidateState =
+            HiveState.UNKNOWN;
 
-    private static final double UP_CELL_PITCH_THRESHOLD_DEG = 35.0;
+    private int candidateStateFrames = 0;
+
+    private boolean hiveTipDetected = false;
+    private int hiveTipCandidateFrames = 0;
+    private Alliance hiveTipAlliance = null;
+
+    // ---------------------------------------------------------------------
+    // Hardware and VisionPortal
+    // ---------------------------------------------------------------------
+
     private final HardwareMap hardwareMap;
     private final String webcamName;
 
@@ -213,119 +301,1067 @@ public class ArduCam {
     private VisionPortal visionPortal;
     private PanelsStreamProcessor streamProcessor;
 
-    // Populate via setLensIntrinsics() if your Arducam/resolution isn't in the
-    // SDK's built-in calibration list and you want accurate ftcPose data.
-    private Double fx, fy, cx, cy;
+    /*
+     * Null means use the official SDK 12 BIOBUZZ library.
+     */
+    private AprilTagLibrary tagLibrary = null;
+
+    private boolean enabled = true;
+
+    // ---------------------------------------------------------------------
+    // Camera configuration
+    // ---------------------------------------------------------------------
+
+    private Double fx = null;
+    private Double fy = null;
+    private Double cx = null;
+    private Double cy = null;
 
     private int resolutionWidth = 640;
     private int resolutionHeight = 480;
 
-    // Many Arducam boards (especially global-shutter ones) don't support the SDK's
-    // default YUY2 format at every resolution. MJPEG is more broadly supported.
-    private VisionPortal.StreamFormat streamFormat = VisionPortal.StreamFormat.MJPEG;
+    private VisionPortal.StreamFormat streamFormat =
+            VisionPortal.StreamFormat.MJPEG;
 
-    public ArduCam(HardwareMap hardwareMap, String webcamName) {
+    // ---------------------------------------------------------------------
+    // Construction
+    // ---------------------------------------------------------------------
+
+    public ArduCam(
+            HardwareMap hardwareMap,
+            String webcamName
+    ) {
+
+        if (hardwareMap == null) {
+
+            throw new IllegalArgumentException(
+                    "HardwareMap cannot be null"
+            );
+        }
+
+        if (webcamName == null
+                || webcamName.trim().isEmpty()) {
+
+            throw new IllegalArgumentException(
+                    "Webcam name cannot be empty"
+            );
+        }
+
         this.hardwareMap = hardwareMap;
         this.webcamName = webcamName;
     }
 
-    /** Supply your own calibration (from an OpenCV checkerboard calibration) for accurate pose data. */
-    public ArduCam setLensIntrinsics(double fx, double fy, double cx, double cy) {
+    // ---------------------------------------------------------------------
+    // Configuration
+    // ---------------------------------------------------------------------
+
+    public ArduCam setLensIntrinsics(
+            double fx,
+            double fy,
+            double cx,
+            double cy
+    ) {
+
+        requireNotInitialized();
+
+        if (!Double.isFinite(fx)
+                || !Double.isFinite(fy)
+                || !Double.isFinite(cx)
+                || !Double.isFinite(cy)
+                || fx <= 0.0
+                || fy <= 0.0) {
+
+            throw new IllegalArgumentException(
+                    "Invalid camera lens intrinsics"
+            );
+        }
+
         this.fx = fx;
         this.fy = fy;
         this.cx = cx;
         this.cy = cy;
+
         return this;
     }
 
-    /** Sets the capture resolution. 640x480 is the safest default (guaranteed built-in calibration). */
-    public ArduCam setResolution(int width, int height) {
-        this.resolutionWidth = width;
-        this.resolutionHeight = height;
-        return this;
-    }
+    public ArduCam setResolution(
+            int width,
+            int height
+    ) {
 
-    /**
-     * Sets the USB stream format. Defaults to MJPEG here (broader Arducam support, lower
-     * bandwidth). Switch to VisionPortal.StreamFormat.YUY2 only if your specific camera/resolution
-     * combo works better uncompressed.
-     */
-    public ArduCam setStreamFormat(VisionPortal.StreamFormat format) {
-        this.streamFormat = format;
-        return this;
-    }
+        requireNotInitialized();
 
-    /** Builds and starts the AprilTag pipeline. Call once during OpMode init. */
-    public void init() {
-        AprilTagProcessor.Builder tagBuilder = new AprilTagProcessor.Builder()
-            .setTagLibrary(AprilTagGameDatabase.getCurrentGameTagLibrary());
-        if (fx != null) {
-            tagBuilder.setLensIntrinsics(fx, fy, cx, cy);
+        if (width <= 0 || height <= 0) {
+
+            throw new IllegalArgumentException(
+                    "Camera resolution must be positive"
+            );
         }
-        aprilTag = tagBuilder.build();
 
-        streamProcessor = new PanelsStreamProcessor();
+        resolutionWidth = width;
+        resolutionHeight = height;
 
-        visionPortal = new VisionPortal.Builder()
-                .setCamera(hardwareMap.get(WebcamName.class, webcamName))
-                .addProcessor(aprilTag)
-                .addProcessor(streamProcessor)
-                .setCameraResolution(new Size(resolutionWidth, resolutionHeight))
-                .setStreamFormat(streamFormat)
-                .build();
+        return this;
     }
 
-    /** Starts pushing live frames to the Panels dashboard. Call after init(). */
-    public void streamToPanels() {
-        PanelsCameraStream.INSTANCE.startStream(streamProcessor, 100);
+    public ArduCam setStreamFormat(
+            VisionPortal.StreamFormat format
+    ) {
+
+        requireNotInitialized();
+
+        if (format == null) {
+
+            throw new IllegalArgumentException(
+                    "Stream format cannot be null"
+            );
+        }
+
+        streamFormat = format;
+
+        return this;
     }
 
-    /** Stops pushing frames to Panels without tearing down the camera. */
-    public void stopPanelsStream() {
-        PanelsCameraStream.INSTANCE.stopStream();
+    public ArduCam setTagLibrary(
+            AprilTagLibrary library
+    ) {
+
+        requireNotInitialized();
+
+        tagLibrary = library;
+
+        return this;
     }
 
-    /** All tags visible in the current frame. */
+    private void requireNotInitialized() {
+
+        if (visionPortal != null) {
+
+            throw new IllegalStateException(
+                    "ArduCam configuration must occur before init()"
+            );
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Initialization
+    // ---------------------------------------------------------------------
+
+    public void init() {
+
+        if (visionPortal != null) {
+            return;
+        }
+
+        AprilTagLibrary selectedLibrary =
+                tagLibrary != null
+                        ? tagLibrary
+                        : AprilTagGameDatabase
+                        .getBioBuzzTagLibrary();
+
+        AprilTagProcessor.Builder tagBuilder =
+                new AprilTagProcessor.Builder()
+                        .setTagLibrary(
+                                selectedLibrary
+                        );
+
+        if (fx != null
+                && fy != null
+                && cx != null
+                && cy != null) {
+
+            tagBuilder.setLensIntrinsics(
+                    fx,
+                    fy,
+                    cx,
+                    cy
+            );
+        }
+
+        aprilTag =
+                tagBuilder.build();
+
+        streamProcessor =
+                new PanelsStreamProcessor();
+
+        visionPortal =
+                new VisionPortal.Builder()
+                        .setCamera(
+                                hardwareMap.get(
+                                        WebcamName.class,
+                                        webcamName
+                                )
+                        )
+                        .addProcessor(
+                                aprilTag
+                        )
+                        .addProcessor(
+                                streamProcessor
+                        )
+                        .setCameraResolution(
+                                new Size(
+                                        resolutionWidth,
+                                        resolutionHeight
+                                )
+                        )
+                        .setStreamFormat(
+                                streamFormat
+                        )
+                        .build();
+
+        visionPortal.setProcessorEnabled(
+                aprilTag,
+                enabled
+        );
+
+        resetHiveState();
+    }
+
+    // ---------------------------------------------------------------------
+    // General detection access
+    // ---------------------------------------------------------------------
+
     public List<AprilTagDetection> getDetections() {
-        if (!enabled) return new java.util.ArrayList<>();
-        return aprilTag.getDetections();
+
+        if (!enabled || aprilTag == null) {
+
+            return Collections.emptyList();
+        }
+
+        List<AprilTagDetection> detections =
+                aprilTag.getDetections();
+
+        return detections == null
+                ? Collections.emptyList()
+                : detections;
     }
 
-    /** First detection matching a specific tag ID, or null if that tag isn't currently visible. */
-    public AprilTagDetection getDetection(int tagId) {
-        for (AprilTagDetection d : getDetections()) {
-            if (d.id == tagId && d.metadata != null) {
-                return d;
+    public List<AprilTagSingleDetection>
+    getSingleDetections() {
+
+        List<AprilTagSingleDetection> result =
+                new ArrayList<>();
+
+        for (AprilTagDetection detection
+                : getDetections()) {
+
+            if (detection
+                    instanceof AprilTagSingleDetection) {
+
+                result.add(
+                        (AprilTagSingleDetection) detection
+                );
             }
         }
+
+        return result;
+    }
+
+    public List<AprilTagClusterDetection>
+    getClusterDetections() {
+
+        List<AprilTagClusterDetection> result =
+                new ArrayList<>();
+
+        for (AprilTagDetection detection
+                : getDetections()) {
+
+            if (detection
+                    instanceof AprilTagClusterDetection) {
+
+                result.add(
+                        (AprilTagClusterDetection) detection
+                );
+            }
+        }
+
+        return result;
+    }
+
+    public AprilTagSingleDetection getDetection(
+            int tagId
+    ) {
+
+        for (AprilTagSingleDetection detection
+                : getSingleDetections()) {
+
+            if (detection.id == tagId) {
+                return detection;
+            }
+        }
+
         return null;
     }
 
-    /** True once the camera stream is actually up and running (useful for a "camera ready" check). */
-    public boolean isStreaming() {
-        return visionPortal != null
-                && visionPortal.getCameraState() == VisionPortal.CameraState.STREAMING;
+    public AprilTagClusterDetection getClusterDetection(
+            String clusterName
+    ) {
+
+        if (clusterName == null) {
+            return null;
+        }
+
+        for (AprilTagClusterDetection detection
+                : getClusterDetections()) {
+
+            String detectedName =
+                    getClusterName(detection);
+
+            if (clusterName.equals(detectedName)) {
+                return detection;
+            }
+        }
+
+        return null;
     }
 
-    /** Pauses the camera stream to free up USB bandwidth/CPU without tearing everything down. */
+    private String getClusterName(
+            AprilTagClusterDetection detection
+    ) {
+
+        if (detection == null
+                || detection.metadata == null) {
+
+            return null;
+        }
+
+        return detection.metadata.name;
+    }
+
+    private String getClusterShortName(
+            AprilTagClusterDetection detection
+    ) {
+
+        if (detection == null
+                || detection.metadata == null) {
+
+            return null;
+        }
+
+        return detection.metadata.shortName;
+    }
+
+    public List<String> getVisibleClusterNames() {
+
+        List<String> names =
+                new ArrayList<>();
+
+        for (AprilTagClusterDetection detection
+                : getClusterDetections()) {
+
+            String name =
+                    getClusterName(detection);
+
+            if (name != null
+                    && !names.contains(name)) {
+
+                names.add(name);
+            }
+        }
+
+        return names;
+    }
+
+    public List<String> getVisibleClusterDetails() {
+
+        List<String> details =
+                new ArrayList<>();
+
+        for (AprilTagClusterDetection detection
+                : getClusterDetections()) {
+
+            String name =
+                    getClusterName(detection);
+
+            String shortName =
+                    getClusterShortName(detection);
+
+            details.add(
+                    "name="
+                            + String.valueOf(name)
+                            + " | shortName="
+                            + String.valueOf(shortName)
+            );
+        }
+
+        return details;
+    }
+
+    // ---------------------------------------------------------------------
+    // Visible HIVE member tags
+    //
+    // Useful for diagnostics and identity fallback.
+    // ---------------------------------------------------------------------
+
+    public List<AprilTagSingleDetection>
+    getVisibleHiveMemberTags() {
+
+        List<AprilTagSingleDetection> result =
+                new ArrayList<>();
+
+        for (AprilTagSingleDetection detection
+                : getSingleDetections()) {
+
+            if (isHiveMemberTag(detection.id)) {
+                result.add(detection);
+            }
+        }
+
+        return result;
+    }
+
+    public HiveCell getVisibleHiveCellFromMemberTags() {
+
+        for (AprilTagSingleDetection detection
+                : getVisibleHiveMemberTags()) {
+
+            HiveCell cell =
+                    getHiveCellFromTagId(
+                            detection.id
+                    );
+
+            if (cell != null) {
+                return cell;
+            }
+        }
+
+        return null;
+    }
+
+    // ---------------------------------------------------------------------
+    // Cluster identity
+    //
+    // SDK 12 cluster pose is preferred for turret aiming.
+    //
+    // The official cluster metadata name/short name is inspected for
+    // alliance and side. Single member IDs remain an identity fallback.
+    // ---------------------------------------------------------------------
+
+    private HiveCell getHiveCell(
+            AprilTagClusterDetection detection
+    ) {
+
+        if (detection == null) {
+            return null;
+        }
+
+        HiveCell metadataCell =
+                getHiveCellFromClusterMetadata(
+                        detection
+                );
+
+        if (metadataCell != null) {
+            return metadataCell;
+        }
+
+        /*
+         * If one cluster and one visible member-tag group are present,
+         * use the member ID range to identify that cluster.
+         *
+         * This fallback is intentionally conservative.
+         */
+        List<AprilTagClusterDetection> clusters =
+                getClusterDetections();
+
+        HiveCell memberCell =
+                getVisibleHiveCellFromMemberTags();
+
+        if (clusters.size() == 1
+                && memberCell != null) {
+
+            return memberCell;
+        }
+
+        return null;
+    }
+
+    private HiveCell getHiveCellFromClusterMetadata(
+            AprilTagClusterDetection detection
+    ) {
+
+        String name =
+                normalizeMetadataText(
+                        getClusterName(detection)
+                );
+
+        String shortName =
+                normalizeMetadataText(
+                        getClusterShortName(detection)
+                );
+
+        String combined =
+                name + " " + shortName;
+
+        Alliance alliance =
+                null;
+
+        HiveSide side =
+                null;
+
+        if (containsWord(combined, "red")) {
+
+            alliance =
+                    Alliance.RED;
+
+        } else if (containsWord(combined, "blue")) {
+
+            alliance =
+                    Alliance.BLUE;
+        }
+
+        if (containsWord(combined, "audience")) {
+
+            side =
+                    HiveSide.AUDIENCE;
+
+        } else if (containsWord(combined, "far")
+                || combined.contains("opposite audience")
+                || combined.contains("opposite_audience")
+                || combined.contains("rear")) {
+
+            side =
+                    HiveSide.FAR;
+        }
+
+        if (alliance == null || side == null) {
+            return null;
+        }
+
+        return new HiveCell(
+                alliance,
+                side
+        );
+    }
+
+    private static String normalizeMetadataText(
+            String value
+    ) {
+
+        if (value == null) {
+            return "";
+        }
+
+        return value
+                .trim()
+                .toLowerCase(Locale.US)
+                .replace('-', ' ')
+                .replace('_', ' ');
+    }
+
+    private static boolean containsWord(
+            String text,
+            String word
+    ) {
+
+        if (text == null || word == null) {
+            return false;
+        }
+
+        String paddedText =
+                " " + text + " ";
+
+        String paddedWord =
+                " " + word.toLowerCase(Locale.US) + " ";
+
+        return paddedText.contains(paddedWord);
+    }
+
+    // ---------------------------------------------------------------------
+    // HIVE cluster filtering
+    // ---------------------------------------------------------------------
+
+    public List<AprilTagClusterDetection>
+    getHiveDetections() {
+
+        List<AprilTagClusterDetection> result =
+                new ArrayList<>();
+
+        for (AprilTagClusterDetection detection
+                : getClusterDetections()) {
+
+            if (getHiveCell(detection) != null) {
+                result.add(detection);
+            }
+        }
+
+        return result;
+    }
+
+    // ---------------------------------------------------------------------
+    // Immediate HIVE visibility
+    // ---------------------------------------------------------------------
+
+    public boolean isHiveVisible(
+            Alliance alliance
+    ) {
+
+        if (alliance == null
+                || !enabled
+                || aprilTag == null) {
+
+            return false;
+        }
+
+        for (AprilTagClusterDetection detection
+                : getHiveDetections()) {
+
+            HiveCell cell =
+                    getHiveCell(detection);
+
+            if (cell != null
+                    && cell.alliance == alliance
+                    && detection.ftcPose != null) {
+
+                return true;
+            }
+        }
+
+        /*
+         * Identity-only fallback.
+         *
+         * This confirms member visibility but does not provide a cluster
+         * pose for turret fusion.
+         */
+        for (AprilTagSingleDetection detection
+                : getVisibleHiveMemberTags()) {
+
+            HiveCell cell =
+                    getHiveCellFromTagId(
+                            detection.id
+                    );
+
+            if (cell != null
+                    && cell.alliance == alliance) {
+
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    // ---------------------------------------------------------------------
+    // Active HIVE cluster
+    // ---------------------------------------------------------------------
+
+    public HiveCell getActiveCell(
+            Alliance alliance
+    ) {
+
+        return getHiveCell(
+                getActiveCellDetection(
+                        alliance
+                )
+        );
+    }
+
+    public AprilTagClusterDetection
+    getActiveCellDetection(
+            Alliance alliance
+    ) {
+
+        if (alliance == null) {
+            return null;
+        }
+
+        AprilTagClusterDetection best =
+                null;
+
+        double bestPitch =
+                Double.MAX_VALUE;
+
+        double threshold =
+                validPositiveThreshold(
+                        UP_CELL_PITCH_THRESHOLD_DEG,
+                        35.0
+                );
+
+        for (AprilTagClusterDetection detection
+                : getHiveDetections()) {
+
+            HiveCell cell =
+                    getHiveCell(detection);
+
+            if (cell == null
+                    || cell.alliance != alliance
+                    || detection.ftcPose == null) {
+
+                continue;
+            }
+
+            double pitch =
+                    Math.abs(
+                            detection.ftcPose.pitch
+                    );
+
+            if (Double.isFinite(pitch)
+                    && pitch < threshold
+                    && pitch < bestPitch) {
+
+                bestPitch = pitch;
+                best = detection;
+            }
+        }
+
+        return best;
+    }
+
+    public AprilTagClusterDetection
+    getAnyHiveDetection(
+            Alliance alliance
+    ) {
+
+        if (alliance == null) {
+            return null;
+        }
+
+        AprilTagClusterDetection best =
+                null;
+
+        double bestRange =
+                Double.MAX_VALUE;
+
+        for (AprilTagClusterDetection detection
+                : getHiveDetections()) {
+
+            HiveCell cell =
+                    getHiveCell(detection);
+
+            if (cell == null
+                    || cell.alliance != alliance
+                    || detection.ftcPose == null) {
+
+                continue;
+            }
+
+            double range =
+                    detection.ftcPose.range;
+
+            if (Double.isFinite(range)
+                    && range >= 0.0
+                    && range < bestRange) {
+
+                bestRange = range;
+                best = detection;
+            }
+        }
+
+        return best;
+    }
+
+    // ---------------------------------------------------------------------
+    // HIVE up/down state
+    // ---------------------------------------------------------------------
+
+    private HiveState readRawState(
+            Alliance alliance
+    ) {
+
+        if (alliance == null) {
+            return HiveState.UNKNOWN;
+        }
+
+        boolean sawAny =
+                false;
+
+        double threshold =
+                validPositiveThreshold(
+                        UP_CELL_PITCH_THRESHOLD_DEG,
+                        35.0
+                );
+
+        for (AprilTagClusterDetection detection
+                : getHiveDetections()) {
+
+            HiveCell cell =
+                    getHiveCell(detection);
+
+            if (cell == null
+                    || cell.alliance != alliance
+                    || detection.ftcPose == null) {
+
+                continue;
+            }
+
+            sawAny = true;
+
+            double pitch =
+                    Math.abs(
+                            detection.ftcPose.pitch
+                    );
+
+            if (Double.isFinite(pitch)
+                    && pitch < threshold) {
+
+                return HiveState.UP;
+            }
+        }
+
+        return sawAny
+                ? HiveState.DOWN
+                : HiveState.UNKNOWN;
+    }
+
+    public HiveState updateHiveState(
+            Alliance alliance
+    ) {
+
+        HiveState raw =
+                readRawState(alliance);
+
+        if (raw == candidateState) {
+
+            candidateStateFrames++;
+
+        } else {
+
+            candidateState = raw;
+            candidateStateFrames = 1;
+        }
+
+        int requiredFrames =
+                Math.max(
+                        1,
+                        HIVE_STATE_FRAMES_TO_CONFIRM
+                );
+
+        if (candidateStateFrames >= requiredFrames
+                && candidateState != HiveState.UNKNOWN) {
+
+            confirmedState =
+                    candidateState;
+        }
+
+        return confirmedState;
+    }
+
+    public HiveState getHiveState() {
+
+        return confirmedState;
+    }
+
+    // ---------------------------------------------------------------------
+    // Latched HIVE tip detection
+    // ---------------------------------------------------------------------
+
+    public boolean updateHiveTipDetected(
+            Alliance alliance
+    ) {
+
+        if (alliance == null
+                || !enabled
+                || aprilTag == null) {
+
+            hiveTipCandidateFrames = 0;
+
+            return hiveTipDetected;
+        }
+
+        boolean tippedThisFrame =
+                false;
+
+        double threshold =
+                validPositiveThreshold(
+                        TIPPED_PITCH_THRESHOLD_DEG,
+                        35.0
+                );
+
+        for (AprilTagClusterDetection detection
+                : getHiveDetections()) {
+
+            HiveCell cell =
+                    getHiveCell(detection);
+
+            if (cell == null
+                    || cell.alliance != alliance
+                    || detection.ftcPose == null) {
+
+                continue;
+            }
+
+            double pitch =
+                    Math.abs(
+                            detection.ftcPose.pitch
+                    );
+
+            if (Double.isFinite(pitch)
+                    && pitch < threshold) {
+
+                tippedThisFrame = true;
+
+                break;
+            }
+        }
+
+        if (tippedThisFrame) {
+
+            hiveTipCandidateFrames++;
+
+        } else {
+
+            hiveTipCandidateFrames = 0;
+        }
+
+        int requiredFrames =
+                Math.max(
+                        1,
+                        TIP_FRAMES_TO_CONFIRM
+                );
+
+        if (hiveTipCandidateFrames >= requiredFrames) {
+
+            hiveTipDetected = true;
+            hiveTipAlliance = alliance;
+        }
+
+        return hiveTipDetected;
+    }
+
+    public boolean isHiveTipped() {
+
+        return hiveTipDetected;
+    }
+
+    public boolean isHiveTipped(
+            Alliance alliance
+    ) {
+
+        return hiveTipDetected
+                && alliance != null
+                && hiveTipAlliance == alliance;
+    }
+
+    public void resetHiveTipDetection() {
+
+        hiveTipDetected = false;
+        hiveTipCandidateFrames = 0;
+        hiveTipAlliance = null;
+    }
+
+    public void updateHive(
+            Alliance alliance
+    ) {
+
+        updateHiveState(alliance);
+        updateHiveTipDetected(alliance);
+    }
+
+    public void resetHiveState() {
+
+        confirmedState =
+                HiveState.UNKNOWN;
+
+        candidateState =
+                HiveState.UNKNOWN;
+
+        candidateStateFrames = 0;
+
+        resetHiveTipDetection();
+    }
+
+    // ---------------------------------------------------------------------
+    // Enable/disable
+    // ---------------------------------------------------------------------
+
+    public void setEnabled(
+            boolean enabled
+    ) {
+
+        this.enabled = enabled;
+
+        resetHiveState();
+
+        if (visionPortal != null
+                && aprilTag != null) {
+
+            visionPortal.setProcessorEnabled(
+                    aprilTag,
+                    enabled
+            );
+        }
+    }
+
+    public boolean isEnabled() {
+
+        return enabled;
+    }
+
+    // ---------------------------------------------------------------------
+    // Panels streaming
+    // ---------------------------------------------------------------------
+
+    public void streamToPanels() {
+
+        if (streamProcessor == null) {
+
+            throw new IllegalStateException(
+                    "Call ArduCam.init() before streamToPanels()"
+            );
+        }
+
+        PanelsCameraStream.INSTANCE.startStream(
+                streamProcessor,
+                100
+        );
+    }
+
+    public void stopPanelsStream() {
+
+        PanelsCameraStream.INSTANCE.stopStream();
+    }
+
+    // ---------------------------------------------------------------------
+    // Camera status/control
+    // ---------------------------------------------------------------------
+
+    public boolean isStreaming() {
+
+        return visionPortal != null
+                && visionPortal.getCameraState()
+                == VisionPortal.CameraState.STREAMING;
+    }
+
     public void stopStreaming() {
+
         if (visionPortal != null) {
             visionPortal.stopStreaming();
         }
     }
 
     public void resumeStreaming() {
+
         if (visionPortal != null) {
             visionPortal.resumeStreaming();
         }
     }
 
-    /** Call from your OpMode's stop() (or after runOpMode ends) to release the camera cleanly. */
     public void close() {
+
         stopPanelsStream();
+
         if (visionPortal != null) {
+
             visionPortal.close();
+            visionPortal = null;
         }
+
+        aprilTag = null;
+        streamProcessor = null;
+
+        resetHiveState();
+    }
+
+    // ---------------------------------------------------------------------
+    // Utility
+    // ---------------------------------------------------------------------
+
+    private static double validPositiveThreshold(
+            double configuredValue,
+            double fallbackValue
+    ) {
+
+        return Double.isFinite(configuredValue)
+                ? Math.abs(configuredValue)
+                : Math.abs(fallbackValue);
     }
 }
-

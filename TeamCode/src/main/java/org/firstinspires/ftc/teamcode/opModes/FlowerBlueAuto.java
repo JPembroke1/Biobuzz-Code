@@ -70,11 +70,11 @@ public class FlowerBlueAuto extends OpMode {
     // bluePosition = 1.0 - redPosition
     // -------------------------------------------------------------------------
 
-    public static double PRELOAD_TURRET_POSITION = 1.0;
+    public static double PRELOAD_TURRET_POSITION = 0.0;
 
-    public static double FAR_WALL_TURRET_POSITION = 0.70;
+    public static double FAR_WALL_TURRET_POSITION = 0.30;
 
-    public static double SECOND_FLOWER_TURRET_POSITION = 0.60;
+    public static double SECOND_FLOWER_TURRET_POSITION = 0.40;
 
     public static double TRAVEL_TURRET_POSITION = 0.50;
 

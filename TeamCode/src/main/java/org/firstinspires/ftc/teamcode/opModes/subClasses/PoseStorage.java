@@ -3,15 +3,20 @@ package org.firstinspires.ftc.teamcode.opModes.subClasses;
 import com.pedropathing.math.Pose;
 
 /**
- * Shares alliance and pose between autonomous and TeleOp.
+ * In-memory handover between autonomous and TeleOp.
  *
- * Static storage is in-memory only.
- * TeleOp should always display and validate the stored values.
+ * Autonomous should:
+ * 1. Set the alliance.
+ * 2. Save the current pose during execution and before finishing.
+ *
+ * TeleOp should:
+ * 1. Restore the saved pose during init().
+ * 2. Lock the saved/selected alliance during start().
  */
 public final class PoseStorage {
 
     private PoseStorage() {
-        // Utility class: no instances required.
+        // Static utility class.
     }
 
     public enum Alliance {
@@ -22,7 +27,8 @@ public final class PoseStorage {
 
     public static Pose currentPose = null;
 
-    public static Alliance lastAlliance = Alliance.UNKNOWN;
+    public static Alliance lastAlliance =
+            Alliance.UNKNOWN;
 
     // ---------------------------------------------------------------------
     // Alliance
@@ -49,6 +55,7 @@ public final class PoseStorage {
     }
 
     public static boolean isUnknown() {
+
         return lastAlliance == null
                 || lastAlliance == Alliance.UNKNOWN;
     }
@@ -58,10 +65,9 @@ public final class PoseStorage {
     // ---------------------------------------------------------------------
 
     /**
-     * Stores a snapshot of the supplied pose.
-     * Pose headings are retained in radians.
+     * Stores a snapshot of the supplied Pedro pose.
      *
-     * Invalid input clears the saved pose.
+     * Pedro heading remains in radians.
      */
     public static void setPose(Pose pose) {
 
@@ -70,15 +76,13 @@ public final class PoseStorage {
             return;
         }
 
-        currentPose = new Pose(
-                pose.x(),
-                pose.y(),
-                pose.heading()
-        );
+        currentPose = copyPose(pose);
     }
 
     /**
-     * Returns a copy so callers do not modify the stored pose directly.
+     * Returns a copy of the stored pose.
+     *
+     * This prevents a caller from modifying the stored Pose object.
      */
     public static Pose getPose() {
 
@@ -86,11 +90,7 @@ public final class PoseStorage {
             return null;
         }
 
-        return new Pose(
-                currentPose.x(),
-                currentPose.y(),
-                currentPose.heading()
-        );
+        return copyPose(currentPose);
     }
 
     public static boolean hasPose() {
@@ -101,6 +101,20 @@ public final class PoseStorage {
         currentPose = null;
     }
 
+    // ---------------------------------------------------------------------
+    // Clear all
+    // ---------------------------------------------------------------------
+
+    public static void clearAll() {
+
+        currentPose = null;
+        lastAlliance = Alliance.UNKNOWN;
+    }
+
+    // ---------------------------------------------------------------------
+    // Validation
+    // ---------------------------------------------------------------------
+
     private static boolean isValidPose(Pose pose) {
 
         return pose != null
@@ -109,12 +123,12 @@ public final class PoseStorage {
                 && Double.isFinite(pose.heading());
     }
 
-    // ---------------------------------------------------------------------
-    // Clear all
-    // ---------------------------------------------------------------------
+    private static Pose copyPose(Pose pose) {
 
-    public static void clearAll() {
-        currentPose = null;
-        lastAlliance = Alliance.UNKNOWN;
+        return new Pose(
+                pose.x(),
+                pose.y(),
+                pose.heading()
+        );
     }
 }
