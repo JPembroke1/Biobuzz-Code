@@ -94,7 +94,6 @@ public class ArduCamTest extends LinearOpMode {
             // --- AprilTag telemetry / logic ---
             AprilTagDetection tag = camera.getDetection(DESIRED_TAG_ID);
             if (tag != null) {
-                telemetry.addData("Tag " + tag.id, "seen");
                 telemetry.addData("Range (in)", "%.1f", tag.ftcPose.range);
                 telemetry.addData("Bearing (deg)", "%.1f", tag.ftcPose.bearing);
                 telemetry.addData("Yaw (deg)", "%.1f", tag.ftcPose.yaw);

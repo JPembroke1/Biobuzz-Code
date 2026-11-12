@@ -10,6 +10,8 @@ import com.qualcomm.robotcore.hardware.HardwareMap;
 import org.firstinspires.ftc.robotcore.external.function.Consumer;
 import org.firstinspires.ftc.robotcore.external.function.Continuation;
 import org.firstinspires.ftc.robotcore.external.hardware.camera.WebcamName;
+import org.firstinspires.ftc.robotcore.external.hardware.camera.controls.ExposureControl;
+import org.firstinspires.ftc.robotcore.external.hardware.camera.controls.GainControl;
 import org.firstinspires.ftc.robotcore.external.stream.CameraStreamSource;
 import org.firstinspires.ftc.robotcore.internal.camera.calibration.CameraCalibration;
 
@@ -30,41 +32,44 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * SDK 12 Arducam / VisionPortal subsystem for BIOBUZZ.
+ * Arducam / VisionPortal subsystem for FTC SDK 12 and BIOBUZZ.
  *
  * Features:
  *
  * - Official BIOBUZZ AprilTag library
- * - SDK 12 cluster and single-tag handling
- * - Official HIVE member-tag ranges 30 through 45
- * - HIVE alliance and side identification
+ * - SDK 12 single-tag and cluster detections
+ * - Official HIVE member-tag ranges
+ * - HIVE alliance and CELL-side identification
  * - Immediate HIVE visibility
+ * - Active/upward CELL selection
  * - Debounced HIVE state
- * - Latched tip detection
- * - Turret fusion detection access
- * - Optional Panels streaming
+ * - Latched HIVE-tip detection
+ * - Turret-fusion detection access
+ * - Configurable AprilTag decimation
+ * - Configurable manual exposure and gain
+ * - Panels dashboard streaming
  *
- * SDK 12 notes:
+ * SDK 12 detection structure:
  *
- * AprilTagDetection is the shared base type.
+ * AprilTagDetection
+ *   |- AprilTagSingleDetection
+ *   |    |- id
+ *   |    |- metadata
+ *   |
+ *   |- AprilTagClusterDetection
+ *        |- cluster metadata
+ *        |- cluster name
  *
- * AprilTagSingleDetection contains:
- * - id
- * - single-tag metadata
- *
- * AprilTagClusterDetection contains:
- * - cluster metadata
- * - cluster name
- *
- * ftcPose is available through the base detection type.
+ * ftcPose is available through the common AprilTagDetection base class.
  */
 public class ArduCam {
 
     // ---------------------------------------------------------------------
-    // Panels camera streaming
+    // Panels camera stream
     // ---------------------------------------------------------------------
 
     private static class PanelsStreamProcessor
@@ -191,7 +196,10 @@ public class ArduCam {
     // ---------------------------------------------------------------------
     // Official BIOBUZZ HIVE member-tag ranges
     //
-    // Each CELL contains one cluster of four 3.25-inch 36h11 tags.
+    // Red FAR:      30, 31, 32, 33
+    // Red Audience: 34, 35, 36, 37
+    // Blue Audience:38, 39, 40, 41
+    // Blue FAR:     42, 43, 44, 45
     // ---------------------------------------------------------------------
 
     public static final int RED_FAR_TAG_MIN = 30;
@@ -206,9 +214,6 @@ public class ArduCam {
     public static final int BLUE_FAR_TAG_MIN = 42;
     public static final int BLUE_FAR_TAG_MAX = 45;
 
-    /**
-     * Converts a BIOBUZZ HIVE member-tag ID into its CELL identity.
-     */
     public static HiveCell getHiveCellFromTagId(
             int tagId
     ) {
@@ -256,26 +261,76 @@ public class ArduCam {
             int tagId
     ) {
 
-        return getHiveCellFromTagId(tagId) != null;
+        return getHiveCellFromTagId(
+                tagId
+        ) != null;
     }
 
     // ---------------------------------------------------------------------
-    // HIVE configuration
+    // HIVE state configuration
     // ---------------------------------------------------------------------
 
     public static int HIVE_STATE_FRAMES_TO_CONFIRM = 5;
+
     public static int TIP_FRAMES_TO_CONFIRM = 3;
 
     /*
-     * Team-calibrated thresholds.
+     * Team-calibrated values.
      *
-     * Verify actual pitch/roll telemetry with your turret-mounted camera.
+     * Record pitch and roll with the HIVE in both states and adjust from
+     * measured data.
      */
     public static double UP_CELL_PITCH_THRESHOLD_DEG = 35.0;
+
     public static double TIPPED_PITCH_THRESHOLD_DEG = 35.0;
 
     // ---------------------------------------------------------------------
-    // HIVE state
+    // AprilTag detection tuning
+    // ---------------------------------------------------------------------
+
+    /*
+     * Lower decimation retains more image detail at the cost of CPU.
+     *
+     * Suggested values:
+     *
+     * 2.0 = lighter processing
+     * 1.5 = recommended starting point
+     * 1.0 = maximum detail and CPU load
+     */
+    public static float APRILTAG_DECIMATION = 1.5f;
+
+    // ---------------------------------------------------------------------
+    // Exposure and gain tuning
+    //
+    // These are starting values, not universal Arducam values.
+    //
+    // Tune under representative competition lighting.
+    // ---------------------------------------------------------------------
+
+    public static boolean MANUAL_EXPOSURE_ENABLED = true;
+
+    public static int EXPOSURE_MS = 6;
+
+    public static int CAMERA_GAIN = 80;
+
+    /*
+     * Public diagnostic fields for telemetry.
+     */
+    public static boolean cameraSettingsApplied = false;
+
+    public static int appliedExposureMs = -1;
+    public static int appliedGain = -1;
+
+    public static String cameraSettingsStatus =
+            "WAITING FOR CAMERA";
+
+    /*
+     * Prevent unsupported camera controls from being retried every frame.
+     */
+    private boolean cameraSettingsAttempted = false;
+
+    // ---------------------------------------------------------------------
+    // HIVE state tracking
     // ---------------------------------------------------------------------
 
     private HiveState confirmedState =
@@ -287,7 +342,9 @@ public class ArduCam {
     private int candidateStateFrames = 0;
 
     private boolean hiveTipDetected = false;
+
     private int hiveTipCandidateFrames = 0;
+
     private Alliance hiveTipAlliance = null;
 
     // ---------------------------------------------------------------------
@@ -295,21 +352,24 @@ public class ArduCam {
     // ---------------------------------------------------------------------
 
     private final HardwareMap hardwareMap;
+
     private final String webcamName;
 
     private AprilTagProcessor aprilTag;
+
     private VisionPortal visionPortal;
+
     private PanelsStreamProcessor streamProcessor;
 
     /*
-     * Null means use the official SDK 12 BIOBUZZ library.
+     * Null means use the official BIOBUZZ library bundled with SDK 12.
      */
     private AprilTagLibrary tagLibrary = null;
 
     private boolean enabled = true;
 
     // ---------------------------------------------------------------------
-    // Camera configuration
+    // Camera calibration and stream configuration
     // ---------------------------------------------------------------------
 
     private Double fx = null;
@@ -391,7 +451,8 @@ public class ArduCam {
 
         requireNotInitialized();
 
-        if (width <= 0 || height <= 0) {
+        if (width <= 0
+                || height <= 0) {
 
             throw new IllegalArgumentException(
                     "Camera resolution must be positive"
@@ -453,6 +514,15 @@ public class ArduCam {
             return;
         }
 
+        cameraSettingsApplied = false;
+        cameraSettingsAttempted = false;
+
+        appliedExposureMs = -1;
+        appliedGain = -1;
+
+        cameraSettingsStatus =
+                "INITIALIZING";
+
         AprilTagLibrary selectedLibrary =
                 tagLibrary != null
                         ? tagLibrary
@@ -465,6 +535,9 @@ public class ArduCam {
                                 selectedLibrary
                         );
 
+        /*
+         * Lens intrinsics must be supplied as a complete set.
+         */
         if (fx != null
                 && fy != null
                 && cx != null
@@ -481,6 +554,21 @@ public class ArduCam {
         aprilTag =
                 tagBuilder.build();
 
+        /*
+         * Lower decimation preserves more detail for distant or small
+         * AprilTags.
+         */
+        if (Float.isFinite(APRILTAG_DECIMATION)
+                && APRILTAG_DECIMATION > 0.0f) {
+
+            aprilTag.setDecimation(
+                    APRILTAG_DECIMATION
+            );
+        }
+
+        /*
+         * Panels stream remains enabled for camera tuning.
+         */
         streamProcessor =
                 new PanelsStreamProcessor();
 
@@ -514,7 +602,219 @@ public class ArduCam {
                 enabled
         );
 
+        cameraSettingsStatus =
+                "WAITING FOR STREAM";
+
         resetHiveState();
+    }
+
+    // ---------------------------------------------------------------------
+    // Exposure and gain
+    // ---------------------------------------------------------------------
+
+    /**
+     * Applies manual exposure and gain once VisionPortal reaches
+     * STREAMING.
+     *
+     * This is non-blocking and can safely be called every OpMode loop.
+     * Work is performed only once.
+     */
+    public void updateCameraSettings() {
+
+        if (visionPortal == null) {
+
+            cameraSettingsStatus =
+                    "VISION PORTAL NOT INITIALIZED";
+
+            return;
+        }
+
+        if (!MANUAL_EXPOSURE_ENABLED) {
+
+            cameraSettingsStatus =
+                    "AUTO EXPOSURE ENABLED";
+
+            return;
+        }
+
+        if (cameraSettingsApplied
+                || cameraSettingsAttempted) {
+
+            return;
+        }
+
+        VisionPortal.CameraState cameraState =
+                visionPortal.getCameraState();
+
+        if (cameraState
+                != VisionPortal.CameraState.STREAMING) {
+
+            cameraSettingsStatus =
+                    "WAITING: "
+                            + cameraState;
+
+            return;
+        }
+
+        cameraSettingsAttempted = true;
+
+        try {
+
+            ExposureControl exposureControl =
+                    visionPortal.getCameraControl(
+                            ExposureControl.class
+                    );
+
+            GainControl gainControl =
+                    visionPortal.getCameraControl(
+                            GainControl.class
+                    );
+
+            if (exposureControl == null) {
+
+                cameraSettingsStatus =
+                        "EXPOSURE CONTROL UNSUPPORTED";
+
+                return;
+            }
+
+            if (gainControl == null) {
+
+                cameraSettingsStatus =
+                        "GAIN CONTROL UNSUPPORTED";
+
+                return;
+            }
+
+            long minimumExposureMs =
+                    exposureControl.getMinExposure(
+                            TimeUnit.MILLISECONDS
+                    );
+
+            long maximumExposureMs =
+                    exposureControl.getMaxExposure(
+                            TimeUnit.MILLISECONDS
+                    );
+
+            /*
+             * Defensive handling for cameras that report unusual ranges.
+             */
+            if (minimumExposureMs < 0L) {
+                minimumExposureMs = 0L;
+            }
+
+            if (maximumExposureMs
+                    < minimumExposureMs) {
+
+                maximumExposureMs =
+                        minimumExposureMs;
+            }
+
+            long requestedExposureMs =
+                    Math.max(
+                            minimumExposureMs,
+                            Math.min(
+                                    maximumExposureMs,
+                                    Math.max(
+                                            0,
+                                            EXPOSURE_MS
+                                    )
+                            )
+                    );
+
+            int minimumGain =
+                    gainControl.getMinGain();
+
+            int maximumGain =
+                    gainControl.getMaxGain();
+
+            if (maximumGain < minimumGain) {
+
+                maximumGain =
+                        minimumGain;
+            }
+
+            int requestedGain =
+                    Math.max(
+                            minimumGain,
+                            Math.min(
+                                    maximumGain,
+                                    CAMERA_GAIN
+                            )
+                    );
+
+            boolean manualModeAccepted =
+                    exposureControl.setMode(
+                            ExposureControl.Mode.Manual
+                    );
+
+            if (!manualModeAccepted) {
+
+                cameraSettingsStatus =
+                        "MANUAL EXPOSURE REJECTED";
+
+                return;
+            }
+
+            boolean exposureAccepted =
+                    exposureControl.setExposure(
+                            requestedExposureMs,
+                            TimeUnit.MILLISECONDS
+                    );
+
+            boolean gainAccepted =
+                    gainControl.setGain(
+                            requestedGain
+                    );
+
+            appliedExposureMs =
+                    (int) requestedExposureMs;
+
+            appliedGain =
+                    requestedGain;
+
+            cameraSettingsApplied =
+                    exposureAccepted
+                            && gainAccepted;
+
+            if (cameraSettingsApplied) {
+
+                cameraSettingsStatus =
+                        "MANUAL SETTINGS APPLIED";
+
+            } else {
+
+                cameraSettingsStatus =
+                        "CAMERA REJECTED SETTINGS";
+            }
+
+        } catch (RuntimeException exception) {
+
+            cameraSettingsApplied = false;
+
+            cameraSettingsStatus =
+                    "SETTINGS ERROR: "
+                            + exception
+                            .getClass()
+                            .getSimpleName();
+        }
+    }
+
+    /**
+     * Allows dashboard values to be reapplied during testing.
+     *
+     * Call after changing EXPOSURE_MS or CAMERA_GAIN.
+     */
+    public void requestCameraSettingsReapply() {
+
+        cameraSettingsApplied = false;
+        cameraSettingsAttempted = false;
+
+        appliedExposureMs = -1;
+        appliedGain = -1;
+
+        cameraSettingsStatus =
+                "REAPPLY REQUESTED";
     }
 
     // ---------------------------------------------------------------------
@@ -523,7 +823,14 @@ public class ArduCam {
 
     public List<AprilTagDetection> getDetections() {
 
-        if (!enabled || aprilTag == null) {
+        /*
+         * Applies exposure and gain as soon as the camera reaches the
+         * STREAMING state.
+         */
+        updateCameraSettings();
+
+        if (!enabled
+                || aprilTag == null) {
 
             return Collections.emptyList();
         }
@@ -578,6 +885,12 @@ public class ArduCam {
         return result;
     }
 
+    /**
+     * Returns an ordinary single AprilTag by ID.
+     *
+     * Cluster detections are ignored because clusters do not have one
+     * cluster-level ID.
+     */
     public AprilTagSingleDetection getDetection(
             int tagId
     ) {
@@ -605,9 +918,14 @@ public class ArduCam {
                 : getClusterDetections()) {
 
             String detectedName =
-                    getClusterName(detection);
+                    getClusterName(
+                            detection
+                    );
 
-            if (clusterName.equals(detectedName)) {
+            if (clusterName.equals(
+                    detectedName
+            )) {
+
                 return detection;
             }
         }
@@ -650,7 +968,9 @@ public class ArduCam {
                 : getClusterDetections()) {
 
             String name =
-                    getClusterName(detection);
+                    getClusterName(
+                            detection
+                    );
 
             if (name != null
                     && !names.contains(name)) {
@@ -671,16 +991,42 @@ public class ArduCam {
                 : getClusterDetections()) {
 
             String name =
-                    getClusterName(detection);
+                    getClusterName(
+                            detection
+                    );
 
             String shortName =
-                    getClusterShortName(detection);
+                    getClusterShortName(
+                            detection
+                    );
+
+            String poseDetails;
+
+            if (detection.ftcPose == null) {
+
+                poseDetails =
+                        "pose=NONE";
+
+            } else {
+
+                poseDetails =
+                        String.format(
+                                Locale.US,
+                                "bearing=%.1f range=%.1f pitch=%.1f roll=%.1f",
+                                detection.ftcPose.bearing,
+                                detection.ftcPose.range,
+                                detection.ftcPose.pitch,
+                                detection.ftcPose.roll
+                        );
+            }
 
             details.add(
                     "name="
                             + String.valueOf(name)
                             + " | shortName="
                             + String.valueOf(shortName)
+                            + " | "
+                            + poseDetails
             );
         }
 
@@ -689,8 +1035,6 @@ public class ArduCam {
 
     // ---------------------------------------------------------------------
     // Visible HIVE member tags
-    //
-    // Useful for diagnostics and identity fallback.
     // ---------------------------------------------------------------------
 
     public List<AprilTagSingleDetection>
@@ -702,7 +1046,10 @@ public class ArduCam {
         for (AprilTagSingleDetection detection
                 : getSingleDetections()) {
 
-            if (isHiveMemberTag(detection.id)) {
+            if (isHiveMemberTag(
+                    detection.id
+            )) {
+
                 result.add(detection);
             }
         }
@@ -729,12 +1076,12 @@ public class ArduCam {
     }
 
     // ---------------------------------------------------------------------
-    // Cluster identity
+    // HIVE cluster identity
     //
-    // SDK 12 cluster pose is preferred for turret aiming.
+    // Cluster metadata is preferred.
     //
-    // The official cluster metadata name/short name is inspected for
-    // alliance and side. Single member IDs remain an identity fallback.
+    // Single member-tag IDs provide a conservative identity fallback
+    // when exactly one cluster is visible.
     // ---------------------------------------------------------------------
 
     private HiveCell getHiveCell(
@@ -754,18 +1101,17 @@ public class ArduCam {
             return metadataCell;
         }
 
-        /*
-         * If one cluster and one visible member-tag group are present,
-         * use the member ID range to identify that cluster.
-         *
-         * This fallback is intentionally conservative.
-         */
         List<AprilTagClusterDetection> clusters =
                 getClusterDetections();
 
         HiveCell memberCell =
                 getVisibleHiveCellFromMemberTags();
 
+        /*
+         * Only associate a member-tag identity with a cluster when there
+         * is exactly one visible cluster. This avoids assigning one
+         * member-tag group to the wrong cluster.
+         */
         if (clusters.size() == 1
                 && memberCell != null) {
 
@@ -781,16 +1127,22 @@ public class ArduCam {
 
         String name =
                 normalizeMetadataText(
-                        getClusterName(detection)
+                        getClusterName(
+                                detection
+                        )
                 );
 
         String shortName =
                 normalizeMetadataText(
-                        getClusterShortName(detection)
+                        getClusterShortName(
+                                detection
+                        )
                 );
 
         String combined =
-                name + " " + shortName;
+                name
+                        + " "
+                        + shortName;
 
         Alliance alliance =
                 null;
@@ -798,32 +1150,53 @@ public class ArduCam {
         HiveSide side =
                 null;
 
-        if (containsWord(combined, "red")) {
+        if (containsWord(
+                combined,
+                "red"
+        )) {
 
             alliance =
                     Alliance.RED;
 
-        } else if (containsWord(combined, "blue")) {
+        } else if (containsWord(
+                combined,
+                "blue"
+        )) {
 
             alliance =
                     Alliance.BLUE;
         }
 
-        if (containsWord(combined, "audience")) {
+        if (containsWord(
+                combined,
+                "audience"
+        )) {
 
             side =
                     HiveSide.AUDIENCE;
 
-        } else if (containsWord(combined, "far")
-                || combined.contains("opposite audience")
-                || combined.contains("opposite_audience")
-                || combined.contains("rear")) {
+        } else if (containsWord(
+                combined,
+                "far"
+        )
+                || combined.contains(
+                "opposite audience"
+        )
+                || combined.contains(
+                "oppositeaudience"
+        )
+                || containsWord(
+                combined,
+                "rear"
+        )) {
 
             side =
                     HiveSide.FAR;
         }
 
-        if (alliance == null || side == null) {
+        if (alliance == null
+                || side == null) {
+
             return null;
         }
 
@@ -845,7 +1218,8 @@ public class ArduCam {
                 .trim()
                 .toLowerCase(Locale.US)
                 .replace('-', ' ')
-                .replace('_', ' ');
+                .replace('_', ' ')
+                .replaceAll("\\s+", " ");
     }
 
     private static boolean containsWord(
@@ -853,17 +1227,28 @@ public class ArduCam {
             String word
     ) {
 
-        if (text == null || word == null) {
+        if (text == null
+                || word == null) {
+
             return false;
         }
 
         String paddedText =
-                " " + text + " ";
+                " "
+                        + text
+                        + " ";
 
         String paddedWord =
-                " " + word.toLowerCase(Locale.US) + " ";
+                " "
+                        + word
+                        .toLowerCase(
+                                Locale.US
+                        )
+                        + " ";
 
-        return paddedText.contains(paddedWord);
+        return paddedText.contains(
+                paddedWord
+        );
     }
 
     // ---------------------------------------------------------------------
@@ -879,7 +1264,10 @@ public class ArduCam {
         for (AprilTagClusterDetection detection
                 : getClusterDetections()) {
 
-            if (getHiveCell(detection) != null) {
+            if (getHiveCell(
+                    detection
+            ) != null) {
+
                 result.add(detection);
             }
         }
@@ -902,11 +1290,16 @@ public class ArduCam {
             return false;
         }
 
+        /*
+         * Prefer a full SDK 12 cluster detection with valid pose.
+         */
         for (AprilTagClusterDetection detection
                 : getHiveDetections()) {
 
             HiveCell cell =
-                    getHiveCell(detection);
+                    getHiveCell(
+                            detection
+                    );
 
             if (cell != null
                     && cell.alliance == alliance
@@ -917,10 +1310,10 @@ public class ArduCam {
         }
 
         /*
-         * Identity-only fallback.
+         * Identity-only fallback using one visible member tag.
          *
-         * This confirms member visibility but does not provide a cluster
-         * pose for turret fusion.
+         * This can prove HIVE visibility, but it is not used for turret
+         * cluster-pose fusion.
          */
         for (AprilTagSingleDetection detection
                 : getVisibleHiveMemberTags()) {
@@ -941,7 +1334,7 @@ public class ArduCam {
     }
 
     // ---------------------------------------------------------------------
-    // Active HIVE cluster
+    // Active/upward HIVE CELL
     // ---------------------------------------------------------------------
 
     public HiveCell getActiveCell(
@@ -955,6 +1348,10 @@ public class ArduCam {
         );
     }
 
+    /**
+     * Returns the upward alliance CELL with the smallest absolute pitch
+     * inside UP_CELL_PITCH_THRESHOLD_DEG.
+     */
     public AprilTagClusterDetection
     getActiveCellDetection(
             Alliance alliance
@@ -980,7 +1377,9 @@ public class ArduCam {
                 : getHiveDetections()) {
 
             HiveCell cell =
-                    getHiveCell(detection);
+                    getHiveCell(
+                            detection
+                    );
 
             if (cell == null
                     || cell.alliance != alliance
@@ -1006,6 +1405,10 @@ public class ArduCam {
         return best;
     }
 
+    /**
+     * Returns the nearest visible HIVE cluster for the alliance,
+     * regardless of whether the CELL is considered up or down.
+     */
     public AprilTagClusterDetection
     getAnyHiveDetection(
             Alliance alliance
@@ -1025,7 +1428,9 @@ public class ArduCam {
                 : getHiveDetections()) {
 
             HiveCell cell =
-                    getHiveCell(detection);
+                    getHiveCell(
+                            detection
+                    );
 
             if (cell == null
                     || cell.alliance != alliance
@@ -1074,7 +1479,9 @@ public class ArduCam {
                 : getHiveDetections()) {
 
             HiveCell cell =
-                    getHiveCell(detection);
+                    getHiveCell(
+                            detection
+                    );
 
             if (cell == null
                     || cell.alliance != alliance
@@ -1107,7 +1514,9 @@ public class ArduCam {
     ) {
 
         HiveState raw =
-                readRawState(alliance);
+                readRawState(
+                        alliance
+                );
 
         if (raw == candidateState) {
 
@@ -1125,8 +1534,10 @@ public class ArduCam {
                         HIVE_STATE_FRAMES_TO_CONFIRM
                 );
 
-        if (candidateStateFrames >= requiredFrames
-                && candidateState != HiveState.UNKNOWN) {
+        if (candidateStateFrames
+                >= requiredFrames
+                && candidateState
+                != HiveState.UNKNOWN) {
 
             confirmedState =
                     candidateState;
@@ -1141,7 +1552,10 @@ public class ArduCam {
     }
 
     // ---------------------------------------------------------------------
-    // Latched HIVE tip detection
+    // Latched generic HIVE-tip detection
+    //
+    // For autonomous first-tip detection, comparing the active CELL side
+    // before/after the expected tip is safer than this generic method.
     // ---------------------------------------------------------------------
 
     public boolean updateHiveTipDetected(
@@ -1170,7 +1584,9 @@ public class ArduCam {
                 : getHiveDetections()) {
 
             HiveCell cell =
-                    getHiveCell(detection);
+                    getHiveCell(
+                            detection
+                    );
 
             if (cell == null
                     || cell.alliance != alliance
@@ -1208,7 +1624,8 @@ public class ArduCam {
                         TIP_FRAMES_TO_CONFIRM
                 );
 
-        if (hiveTipCandidateFrames >= requiredFrames) {
+        if (hiveTipCandidateFrames
+                >= requiredFrames) {
 
             hiveTipDetected = true;
             hiveTipAlliance = alliance;
@@ -1234,16 +1651,26 @@ public class ArduCam {
     public void resetHiveTipDetection() {
 
         hiveTipDetected = false;
+
         hiveTipCandidateFrames = 0;
+
         hiveTipAlliance = null;
     }
 
+    /**
+     * Updates both the debounced state and generic tip state.
+     */
     public void updateHive(
             Alliance alliance
     ) {
 
-        updateHiveState(alliance);
-        updateHiveTipDetected(alliance);
+        updateHiveState(
+                alliance
+        );
+
+        updateHiveTipDetected(
+                alliance
+        );
     }
 
     public void resetHiveState() {
@@ -1260,7 +1687,7 @@ public class ArduCam {
     }
 
     // ---------------------------------------------------------------------
-    // Enable/disable
+    // Processor enable/disable
     // ---------------------------------------------------------------------
 
     public void setEnabled(
@@ -1311,7 +1738,7 @@ public class ArduCam {
     }
 
     // ---------------------------------------------------------------------
-    // Camera status/control
+    // Camera status and control
     // ---------------------------------------------------------------------
 
     public boolean isStreaming() {
@@ -1319,6 +1746,13 @@ public class ArduCam {
         return visionPortal != null
                 && visionPortal.getCameraState()
                 == VisionPortal.CameraState.STREAMING;
+    }
+
+    public VisionPortal.CameraState getCameraState() {
+
+        return visionPortal == null
+                ? null
+                : visionPortal.getCameraState();
     }
 
     public void stopStreaming() {
@@ -1331,7 +1765,14 @@ public class ArduCam {
     public void resumeStreaming() {
 
         if (visionPortal != null) {
+
             visionPortal.resumeStreaming();
+
+            /*
+             * Some cameras restore automatic settings after streaming is
+             * restarted. Allow manual settings to be reapplied.
+             */
+            requestCameraSettingsReapply();
         }
     }
 
@@ -1342,11 +1783,21 @@ public class ArduCam {
         if (visionPortal != null) {
 
             visionPortal.close();
+
             visionPortal = null;
         }
 
         aprilTag = null;
         streamProcessor = null;
+
+        cameraSettingsApplied = false;
+        cameraSettingsAttempted = false;
+
+        appliedExposureMs = -1;
+        appliedGain = -1;
+
+        cameraSettingsStatus =
+                "CAMERA CLOSED";
 
         resetHiveState();
     }

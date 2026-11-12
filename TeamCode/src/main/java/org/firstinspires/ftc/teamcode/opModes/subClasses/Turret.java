@@ -19,39 +19,35 @@ public class Turret {
     private Servo turretServo;
 
     // ---------------------------------------------------------------------
-    // Confirmed servo calibration
+    // Confirmed physical calibration
     //
     // With robot heading = 180 degrees:
     //
-    // Servo 0.0 -> turret field heading 270 degrees
-    // Servo 0.5 -> turret field heading   0 degrees
-    // Servo 1.0 -> turret field heading  90 degrees
+    // Servo 0.0 -> shooter field heading  90 degrees
+    // Servo 0.5 -> shooter field heading   0 degrees
+    // Servo 1.0 -> shooter field heading 270 degrees
     //
-    // Servo centre points 180 degrees behind the robot.
-    // Increasing servo position increases CCW turret heading.
+    // Therefore:
+    //
+    // - servo centre is 0.5;
+    // - centre points 180 degrees behind the robot;
+    // - increasing turret angle DECREASES servo position.
     // ---------------------------------------------------------------------
 
     public static double SERVO_CENTER = 0.5;
 
-    /*
-     * Absolute fixed-command limits.
-     *
-     * Autonomous retains the full 0.0 to 1.0 range.
-     */
     public static double RIGHT_SERVO_LIMIT = 0.0;
     public static double LEFT_SERVO_LIMIT = 1.0;
 
     /*
-     * False means positive turret angle increases servo position.
+     * Confirmed true from physical endpoint testing.
      */
-    public static boolean REVERSE_AIM_MAPPING = false;
+    public static boolean REVERSE_AIM_MAPPING = true;
 
     // ---------------------------------------------------------------------
-    // Automatic travel limit
+    // Automatic aiming limit
     //
-    // Applies only to automatic field/camera aiming.
-    //
-    // Fixed autonomous commands retain the full servo range.
+    // Fixed autonomous servo commands retain the full 0.0 to 1.0 range.
     // ---------------------------------------------------------------------
 
     public static double AUTO_AIM_MAX_ANGLE_DEG = 75.0;
@@ -59,23 +55,21 @@ public class Turret {
     // ---------------------------------------------------------------------
     // Base aim tuning
     //
-    // AIM_OFFSET is a servo-position offset.
-    //
-    // 0.01 servo position is approximately 1.8 turret degrees.
+    // AIM_OFFSET is a servo-position offset, not degrees.
     // ---------------------------------------------------------------------
 
     public static double AIM_OFFSET = 0.0;
     public static double AIM_GAIN = 1.0;
 
     /*
-     * Servo centre points directly behind the robot.
+     * At servo centre, the turret points behind the robot.
      */
     public static double TURRET_ZERO_OFFSET_DEG = 180.0;
 
     // ---------------------------------------------------------------------
-    // Turret pivot offset from Pedro/Pinpoint localization point
+    // Turret pivot offset from Pedro/Pinpoint reference point
     //
-    // Robot reference frame:
+    // Robot frame:
     //
     // +X = robot forward
     // +Y = robot left
@@ -89,7 +83,7 @@ public class Turret {
     public static double MIN_AIM_DISTANCE_IN = 1.0;
 
     // ---------------------------------------------------------------------
-    // Optional robot movement compensation
+    // Optional movement compensation
     //
     // velocityX and velocityY must be field-frame velocities in inches/s.
     // ---------------------------------------------------------------------
@@ -104,80 +98,45 @@ public class Turret {
     //
     // Because the camera rotates with the turret:
     //
-    // camera angle estimate =
-    // current turret angle + camera bearing correction
-    //
-    // The fused angle blends the coarse and camera estimates.
+    // camera turret estimate =
+    // current commanded turret angle + visual bearing correction
     // ---------------------------------------------------------------------
 
     public static boolean CAMERA_FUSION_ENABLED = true;
 
     /*
-     * Change to -1.0 only if positive camera bearing causes the turret
-     * to move farther away from the target.
+     * If positive bearing moves farther away from zero during testing,
+     * change this to -1.0.
      */
     public static double CAMERA_BEARING_SIGN = 1.0;
 
-    /*
-     * Converts measured camera bearing into visual correction.
-     *
-     * Start around 0.60 to reduce oscillation.
-     */
     public static double CAMERA_CORRECTION_GAIN = 0.60;
 
     /*
-     * Camera-to-shooter optical alignment correction in degrees.
+     * Camera optical-axis to shooter alignment correction in degrees.
      */
     public static double CAMERA_AIM_OFFSET_DEG = 0.0;
 
-    /*
-     * Camera bearing errors inside this range are ignored.
-     */
     public static double CAMERA_DEADBAND_DEG = 0.75;
-
-    /*
-     * Maximum visual correction applied per loop.
-     */
     public static double CAMERA_MAX_CORRECTION_DEG = 8.0;
 
-    /*
-     * Reject detections outside these limits.
-     */
     public static double CAMERA_MIN_RANGE_IN = 6.0;
     public static double CAMERA_MAX_RANGE_IN = 120.0;
 
     public static double CAMERA_MAX_ABS_BEARING_DEG = 45.0;
 
-    /*
-     * Low-pass filter for visual bearing.
-     *
-     * 0.0 = never responds
-     * 1.0 = no filtering
-     */
     public static double CAMERA_FILTER_ALPHA = 0.35;
 
     /*
-     * Fusion weighting:
-     *
      * 0.0 = Pinpoint only
-     * 1.0 = camera-derived estimate only
-     *
-     * The effective weight is also adjusted using camera range.
+     * 1.0 = camera estimate only
      */
     public static double CAMERA_FUSION_WEIGHT = 0.75;
 
-    /*
-     * Camera alignment tolerance for shooting permission.
-     */
     public static double CAMERA_SHOOT_TOLERANCE_DEG = 2.0;
 
     /*
-     * Range-based confidence.
-     *
-     * At or below CAMERA_FULL_WEIGHT_RANGE_IN, the configured fusion
-     * weight is used fully.
-     *
-     * At CAMERA_ZERO_WEIGHT_RANGE_IN, camera weight reaches zero.
+     * Camera range-based confidence.
      */
     public static double CAMERA_FULL_WEIGHT_RANGE_IN = 30.0;
     public static double CAMERA_ZERO_WEIGHT_RANGE_IN = 100.0;
@@ -205,7 +164,7 @@ public class Turret {
     private Pose targetPose = null;
 
     // ---------------------------------------------------------------------
-    // Aim-source state
+    // Aim source
     // ---------------------------------------------------------------------
 
     public enum AimSource {
@@ -244,6 +203,7 @@ public class Turret {
 
     public static boolean lastTargetReachable = false;
     public static boolean lastHoldingBehind = false;
+
     public static int lastHoldSide = 1;
 
     public static String lastSelectedGoal = "CUSTOM";
@@ -271,10 +231,11 @@ public class Turret {
 
     public void init(HardwareMap hardwareMap) {
 
-        turretServo = hardwareMap.get(
-                Servo.class,
-                TURRET_SERVO_NAME
-        );
+        turretServo =
+                hardwareMap.get(
+                        Servo.class,
+                        TURRET_SERVO_NAME
+                );
 
         turretServo.setDirection(
                 Servo.Direction.FORWARD
@@ -308,7 +269,9 @@ public class Turret {
 
     public void selectGoal(Goal goal) {
 
-        if (goal == null || goal == Goal.CUSTOM) {
+        if (goal == null
+                || goal == Goal.CUSTOM) {
+
             return;
         }
 
@@ -340,11 +303,17 @@ public class Turret {
     }
 
     public void selectRedGoal() {
-        selectGoal(Goal.RED);
+
+        selectGoal(
+                Goal.RED
+        );
     }
 
     public void selectBlueGoal() {
-        selectGoal(Goal.BLUE);
+
+        selectGoal(
+                Goal.BLUE
+        );
     }
 
     /**
@@ -390,22 +359,25 @@ public class Turret {
 
             selectedGoal = goal;
 
-            targetPose = new Pose(
-                    targetX,
-                    targetY,
-                    0.0
-            );
+            targetPose =
+                    new Pose(
+                            targetX,
+                            targetY,
+                            0.0
+                    );
 
             clearAimDiagnostics();
         }
 
-        lastSelectedGoal = selectedGoal.name();
+        lastSelectedGoal =
+                selectedGoal.name();
 
         lastTargetX = targetX;
         lastTargetY = targetY;
     }
 
     public Goal getSelectedGoal() {
+
         return selectedGoal;
     }
 
@@ -447,6 +419,9 @@ public class Turret {
         lastHoldingBehind = false;
         lastHoldSide = 1;
 
+        lastPinpointAngleDeg = Double.NaN;
+        lastFusedAngleDeg = Double.NaN;
+
         currentAimSource = AimSource.NONE;
         lastAimSource = currentAimSource.name();
 
@@ -456,15 +431,6 @@ public class Turret {
 
     // ---------------------------------------------------------------------
     // Fused aiming
-    //
-    // Use this method from TeleOp or autonomous when Arducam assistance
-    // is wanted.
-    //
-    // No valid camera detection:
-    // Pinpoint/Pedro-only aiming.
-    //
-    // Valid camera detection:
-    // Pinpoint/Pedro coarse angle fused with visual residual correction.
     // ---------------------------------------------------------------------
 
     public void aimTurretFused(
@@ -542,22 +508,30 @@ public class Turret {
                                 detection
                         );
 
-                if (cameraCalculation != null) {
+                /*
+                 * Weight zero means the camera is not contributing.
+                 *
+                 * Keep the source as PINPOINT so isAimReady() does not
+                 * unnecessarily require camera alignment.
+                 */
+                if (cameraCalculation != null
+                        && cameraCalculation.fusionWeight > 0.0) {
 
-                    /*
-                     * Blend angles using shortest signed angular difference.
-                     */
                     double differenceRad =
                             normalizeRadians(
-                                    cameraCalculation.cameraEstimateAngleRad
-                                            - pinpointCalculation.requestedAngleRad
+                                    cameraCalculation
+                                            .cameraEstimateAngleRad
+                                            - pinpointCalculation
+                                            .requestedAngleRad
                             );
 
                     finalRequestedAngleRad =
                             normalizeRadians(
-                                    pinpointCalculation.requestedAngleRad
+                                    pinpointCalculation
+                                            .requestedAngleRad
                                             + differenceRad
-                                            * cameraCalculation.fusionWeight
+                                            * cameraCalculation
+                                            .fusionWeight
                             );
 
                     fusionApplied = true;
@@ -608,7 +582,7 @@ public class Turret {
     }
 
     // ---------------------------------------------------------------------
-    // Pinpoint/Pedro-only aiming
+    // Pinpoint-only aiming
     // ---------------------------------------------------------------------
 
     public void aimTurret(Pose robotPose) {
@@ -706,10 +680,12 @@ public class Turret {
                         * headingCos;
 
         double targetDx =
-                targetPose.x() - pivotX;
+                targetPose.x()
+                        - pivotX;
 
         double targetDy =
-                targetPose.y() - pivotY;
+                targetPose.y()
+                        - pivotY;
 
         double physicalDistance =
                 Math.hypot(
@@ -747,10 +723,12 @@ public class Turret {
         }
 
         double aimDx =
-                targetDx + leadX;
+                targetDx
+                        + leadX;
 
         double aimDy =
-                targetDy + leadY;
+                targetDy
+                        + leadY;
 
         double compensatedDistance =
                 Math.hypot(
@@ -824,10 +802,6 @@ public class Turret {
         lastTargetY =
                 targetPose.y();
 
-        /*
-         * Camera range is preferred while fused because it is a direct
-         * observation. Otherwise use field-coordinate distance.
-         */
         if (currentAimSource != AimSource.FUSED
                 || !Double.isFinite(lastCameraRangeIn)) {
 
@@ -880,9 +854,21 @@ public class Turret {
                         * filteredBearingDeg
                         + CAMERA_AIM_OFFSET_DEG;
 
-        if (!Double.isFinite(errorDeg)) {
+        if (!Double.isFinite(errorDeg)
+                || !Double.isFinite(CAMERA_CORRECTION_GAIN)) {
+
             return null;
         }
+
+        double shootTolerance =
+                safeAbsolute(
+                        CAMERA_SHOOT_TOLERANCE_DEG,
+                        2.0
+                );
+
+        lastCameraAligned =
+                Math.abs(errorDeg)
+                        <= shootTolerance;
 
         double deadband =
                 safeAbsolute(
@@ -890,15 +876,7 @@ public class Turret {
                         0.75
                 );
 
-        lastCameraAligned =
-                Math.abs(errorDeg)
-                        <= safeAbsolute(
-                        CAMERA_SHOOT_TOLERANCE_DEG,
-                        2.0
-                );
-
         if (Math.abs(errorDeg) <= deadband) {
-
             errorDeg = 0.0;
         }
 
@@ -923,10 +901,25 @@ public class Turret {
                         correctionLimit
                 );
 
+        double currentServoPosition =
+                getServoPosition();
+
+        if (!Double.isFinite(currentServoPosition)
+                || !Double.isFinite(AIM_OFFSET)) {
+
+            return null;
+        }
+
+        /*
+         * AIM_OFFSET was added after angle-to-servo conversion.
+         *
+         * Remove it before reconstructing the commanded turret angle.
+         */
         double currentAngleRad =
                 Math.toRadians(
                         servoPositionToAngleDeg(
-                                getServoPosition()
+                                currentServoPosition
+                                        - AIM_OFFSET
                         )
                 );
 
@@ -1108,7 +1101,8 @@ public class Turret {
         double rangeConfidence =
                 1.0
                         - (rangeIn - fullWeightRange)
-                        / (zeroWeightRange - fullWeightRange);
+                        / (zeroWeightRange
+                        - fullWeightRange);
 
         return configuredWeight
                 * clamp(
@@ -1214,7 +1208,8 @@ public class Turret {
         double servoPosition =
                 angleToServoPosition(
                         commandedAngle
-                ) + AIM_OFFSET;
+                )
+                        + AIM_OFFSET;
 
         servoPosition =
                 clampToServoLimits(
@@ -1241,7 +1236,7 @@ public class Turret {
     }
 
     // ---------------------------------------------------------------------
-    // Reachability and alignment
+    // Reachability and shooting readiness
     // ---------------------------------------------------------------------
 
     public boolean isTargetReachable() {
@@ -1256,12 +1251,6 @@ public class Turret {
         );
     }
 
-    /**
-     * Returns true when fused camera bearing is within the configured
-     * shooting tolerance.
-     *
-     * False when the camera is not contributing.
-     */
     public boolean isCameraAligned() {
 
         return currentAimSource == AimSource.FUSED
@@ -1270,11 +1259,10 @@ public class Turret {
     }
 
     /**
-     * Suitable shooting gate:
+     * Pinpoint-only aim is ready when reachable.
      *
-     * Pinpoint-only aiming is accepted when no camera target is visible.
-     *
-     * If camera fusion is active, the camera must also be aligned.
+     * Fused aim additionally requires the camera bearing to be inside the
+     * shooting tolerance.
      */
     public boolean isAimReady() {
 
@@ -1290,19 +1278,22 @@ public class Turret {
     }
 
     public AimSource getAimSource() {
+
         return currentAimSource;
     }
 
     public boolean isUsingCameraFusion() {
+
         return currentAimSource == AimSource.FUSED;
     }
 
     public boolean isUsingPinpointAim() {
+
         return currentAimSource == AimSource.PINPOINT;
     }
 
     // ---------------------------------------------------------------------
-    // Automatic aiming limit
+    // Automatic limit
     // ---------------------------------------------------------------------
 
     private double getAutoAimMaxAngleDeg() {
@@ -1333,7 +1324,7 @@ public class Turret {
     // ---------------------------------------------------------------------
     // Fixed servo commands
     //
-    // These bypass the automatic +/-75-degree restriction.
+    // These bypass the automatic +/-75-degree limit.
     // ---------------------------------------------------------------------
 
     public void setFixedServoPosition(
@@ -1396,7 +1387,13 @@ public class Turret {
         lastFixedPositionMode = true;
     }
 
+    /**
+     * Compatibility method.
+     *
+     * On this robot, servo centre points behind the robot.
+     */
     public void setForward() {
+
         setCentre();
     }
 
@@ -1507,6 +1504,7 @@ public class Turret {
     // ---------------------------------------------------------------------
 
     public double getDistanceToTarget() {
+
         return lastDistanceToTargetIn;
     }
 
@@ -1518,19 +1516,22 @@ public class Turret {
     }
 
     public boolean isHoldingBehind() {
+
         return lastHoldingBehind;
     }
 
     public boolean isFixedPositionMode() {
+
         return lastFixedPositionMode;
     }
 
     public static double getCalibratedCentrePosition() {
+
         return centrePosition();
     }
 
     // ---------------------------------------------------------------------
-    // Internal calculation records
+    // Internal calculations
     // ---------------------------------------------------------------------
 
     private static class AimCalculation {
