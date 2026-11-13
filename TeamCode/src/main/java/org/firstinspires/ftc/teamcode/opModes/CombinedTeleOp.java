@@ -8,7 +8,6 @@ import com.qualcomm.hardware.lynx.LynxModule;
 import com.qualcomm.robotcore.eventloop.opmode.OpMode;
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
 
-import org.firstinspires.ftc.teamcode.opModes.subClasses.ArduCam;
 import org.firstinspires.ftc.teamcode.opModes.subClasses.Flower;
 import org.firstinspires.ftc.teamcode.opModes.subClasses.Intake;
 import org.firstinspires.ftc.teamcode.opModes.subClasses.Outtake;
@@ -20,22 +19,36 @@ import org.firstinspires.ftc.teamcode.pedro.Constants;
 
 import java.util.List;
 
+/**
+ * Combined TeleOp, Pinpoint-only turret aiming (no camera).
+ *
+ * Goal naming: the "upper" and "lower" goals here are the two goals at
+ * different field Y positions. In Turret they map to the per-goal angle
+ * trims:
+ *
+ *   UPPER goal -> Turret.HIGH_GOAL_ANGLE_TRIM_DEG
+ *   LOWER goal -> Turret.LOW_GOAL_ANGLE_TRIM_DEG
+ *
+ * The goal coordinates themselves are the RED_/BLUE_ UPPER/LOWER fields
+ * in this class. The Turret's own RED_LOW_GOAL_X/Y style coordinate
+ * fields are not used by this TeleOp.
+ */
 @Configurable
 @TeleOp(name = "0. Combined TeleOp", group = "Main")
 public class CombinedTeleOp extends OpMode {
 
     public static double FIELD_SIZE_IN = 141.5;
     public static double FIELD_CENTER_IN = 70.75;
-    public static double ROBOT_LENGTH_MM = 340.0;
-    public static double ROBOT_WIDTH_MM = 340.0;
+    public static double ROBOT_LENGTH_MM = 380.0;
+    public static double ROBOT_WIDTH_MM = 308.0;
 
-    public static double RED_LOWER_GOAL_X = 58.00;
-    public static double RED_LOWER_GOAL_Y = 46.69;
-    public static double RED_UPPER_GOAL_X = 58.00;
+    public static double RED_LOWER_GOAL_X = 55.00;
+    public static double RED_LOWER_GOAL_Y = 70.00;
+    public static double RED_UPPER_GOAL_X = 59.06;
     public static double RED_UPPER_GOAL_Y = 94.81;
-    public static double BLUE_LOWER_GOAL_X = 83.50;
+    public static double BLUE_LOWER_GOAL_X = 82.44;
     public static double BLUE_LOWER_GOAL_Y = 46.69;
-    public static double BLUE_UPPER_GOAL_X = 83.50;
+    public static double BLUE_UPPER_GOAL_X = 82.44;
     public static double BLUE_UPPER_GOAL_Y = 94.81;
 
     public static double GOAL_SWITCH_Y_IN = 70.75;
@@ -51,12 +64,6 @@ public class CombinedTeleOp extends OpMode {
     public static double TURN_SIGN = -1.0;
     public static boolean CUBIC_STRAFE_TURN = false;
 
-    public static String CAMERA_NAME = "Webcam 1";
-    public static int CAMERA_WIDTH = 640;
-    public static int CAMERA_HEIGHT = 480;
-    public static boolean STREAM_CAMERA_TO_PANELS = false;
-    public static boolean VISION_ENABLED = true;
-
     public static boolean ALLOW_FIXED_TURRET_FEED = true;
     public static boolean FIXED_TURRET_BYPASSES_REGRESSION = true;
 
@@ -70,7 +77,6 @@ public class CombinedTeleOp extends OpMode {
     private Turret turret;
     private Flower flower;
     private RobotSettings robotSettings;
-    private ArduCam camera;
     private List<LynxModule> hubs;
 
     private boolean shooterActive;
@@ -124,7 +130,6 @@ public class CombinedTeleOp extends OpMode {
         Outtake.HOOD_COMP_ENABLED = false;
         Turret.velocityCompensationActive = false;
         turret.setCentre();
-        initialiseCamera();
         flower.flowerActivate(RobotConstants.flowerLiftPos);
         robotSettings.block();
 
@@ -139,14 +144,6 @@ public class CombinedTeleOp extends OpMode {
             status = "No stored pose; perform a corner reset";
         }
         displayTelemetry();
-    }
-
-    private void initialiseCamera() {
-        if (!VISION_ENABLED) return;
-        camera = new ArduCam(hardwareMap, CAMERA_NAME).setResolution(CAMERA_WIDTH, CAMERA_HEIGHT);
-        camera.init();
-        camera.resetHiveState();
-        if (STREAM_CAMERA_TO_PANELS) camera.streamToPanels();
     }
 
     @Override
@@ -182,7 +179,6 @@ public class CombinedTeleOp extends OpMode {
         flower.flowerActivate(RobotConstants.flowerLiftPos);
         Outtake.DISTANCE_REGRESSION_ENABLED = false;
         Outtake.HOOD_COMP_ENABLED = false;
-        if (camera != null) { camera.resetHiveState(); camera.setEnabled(true); }
 
         previousFlowerButton = gamepad1.dpad_right;
         previousRegressionButton = gamepad1.circle;
@@ -220,7 +216,6 @@ public class CombinedTeleOp extends OpMode {
         else updateGoalFromPose(currentPose);
 
         handleTurretModeControls();
-        updateCameraHiveState();
         updateTurretAim(currentPose);
 
         boolean fixedShootingMode = ALLOW_FIXED_TURRET_FEED
@@ -316,8 +311,6 @@ public class CombinedTeleOp extends OpMode {
             if (!poseEstablished) return blockFeed("POSE NOT ESTABLISHED");
             if (!targetValid) return blockFeed("TARGET INVALID");
             if (!turret.isTargetReachable()) return blockFeed("TURRET UNREACHABLE");
-            if (turret.isUsingCameraFusion() && !turret.isCameraAligned())
-                return blockFeed("CAMERA NOT ALIGNED");
             if (!turret.isAimReady()) return blockFeed("AIM NOT READY");
         }
 
@@ -377,6 +370,15 @@ public class CombinedTeleOp extends OpMode {
     }
 
     private void applySelectedGoal() {
+        /*
+         * Tell the Turret which goal is selected so it applies that goal's
+         * angle trim (UPPER = HIGH trim, LOWER = LOW trim). Done every time,
+         * before anything can return early.
+         */
+        turret.setGoalHeight(upperGoalSelected
+                ? Turret.GoalHeight.HIGH
+                : Turret.GoalHeight.LOW);
+
         targetValid = false;
         goalX = goalY = Double.NaN;
         if (activeAlliance == PoseStorage.Alliance.RED) {
@@ -430,7 +432,7 @@ public class CombinedTeleOp extends OpMode {
                 fixedTurretFeedOverride = false;
                 turret.realignToSelectedGoal();
                 stopFeederOnly();
-                status = "Automatic fused aim enabled";
+                status = "Automatic aim enabled";
             } else status = "Aim blocked: alliance, pose or target invalid";
         }
         previousAimButton = aim;
@@ -449,12 +451,6 @@ public class CombinedTeleOp extends OpMode {
         previousCentreButton = centre;
     }
 
-    private void updateCameraHiveState() {
-        if (camera == null || !camera.isEnabled()) return;
-        ArduCam.Alliance alliance = getCameraAlliance();
-        if (alliance != null) camera.updateHive(alliance);
-    }
-
     private void updateTurretAim(Pose pose) {
         distanceToGoalIn = Double.NaN;
         if (!targetValid || !poseEstablished || !validPose(pose)) {
@@ -463,16 +459,7 @@ public class CombinedTeleOp extends OpMode {
         }
         distanceToGoalIn = calculateDistanceToGoal(pose);
         if (!autoAimMode) return;
-        ArduCam.Alliance alliance = getCameraAlliance();
-        if (camera == null || alliance == null || !camera.isEnabled())
-            turret.aimTurret(pose, 0.0, 0.0);
-        else turret.aimTurretFused(pose, 0.0, 0.0, camera, alliance);
-    }
-
-    private ArduCam.Alliance getCameraAlliance() {
-        if (activeAlliance == PoseStorage.Alliance.RED) return ArduCam.Alliance.RED;
-        if (activeAlliance == PoseStorage.Alliance.BLUE) return ArduCam.Alliance.BLUE;
-        return null;
+        turret.aimTurret(pose, 0.0, 0.0);
     }
 
     private double calculateDistanceToGoal(Pose pose) {
@@ -519,7 +506,6 @@ public class CombinedTeleOp extends OpMode {
         goalSelectionInitialized = false;
         updateGoalFromPose(reset);
         turret.realignToSelectedGoal();
-        if (camera != null) camera.resetHiveState();
         status = (red ? "RED " : "BLUE ") + (upper ? "UPPER" : "LOWER") + " corner reset";
     }
 
@@ -580,27 +566,43 @@ public class CombinedTeleOp extends OpMode {
         telemetry.addData("Shooter", shooterActive ? "ON" : "OFF");
         telemetry.addData("TPS", "%.0f / %.0f", outtake.getCurrentTPS(), outtake.getTargetTPS());
         telemetry.addData("At Speed", outtake.isAtSpeed(RobotConstants.FEED_SPEED_TOLERANCE_TPS));
+        telemetry.addData("Raw / Filtered TPS", "%.0f / %.0f", outtake.getRawTPS(), outtake.getCurrentTPS());
+        //telemetry.addData("Shooter Power", "%.3f (integral %.3f, voltage scale %.2f)",
+        //telemetry.addData("Regression", "%s | fixed target %.0f",
         telemetry.addData("Feeder Requested", feederRequested);
         telemetry.addData("Feeder Permitted", feederPermitted);
         telemetry.addData("Feeder Status", feederBlockReason);
         telemetry.addData("Fixed Override", fixedTurretFeedOverride);
 
         telemetry.addLine("=== TURRET ===");
+        String turretState;
+        if (!autoAimMode) {
+            turretState = "FIXED (auto aim off - press G1 Square)";
+        } else if (!targetValid || !poseEstablished) {
+            turretState = "NO TARGET/POSE - turret centred";
+        } else if (turret.isTargetReachable()) {
+            turretState = "TRACKING";
+        } else {
+            turretState = "AT LIMIT " + (Turret.lastHoldSide > 0 ? "(+)" : "(-)")
+                    + " - goal outside arc, check heading or turn robot";
+        }
+        telemetry.addData("Turret State", turretState);
         telemetry.addData("Auto Aim", autoAimMode);
         telemetry.addData("Aim Source", turret.getAimSource());
-        telemetry.addData("Servo", "%.3f", turret.getServoPosition());
         telemetry.addData("Aim Ready", turret.isAimReady());
-        telemetry.addData("Camera Aligned", turret.isCameraAligned());
+        telemetry.addData("Goal", "%s %s (%s)",
+                allianceLabel(),
+                upperGoalSelected ? "UPPER" : "LOWER",
+                manualGoalMode ? "manual" : "auto");
         telemetry.addData("Target", "(%.2f, %.2f)", goalX, goalY);
         telemetry.addData("Distance", "%.2f in", distanceToGoalIn);
-
-        telemetry.addLine("=== CAMERA ===");
-        telemetry.addData("Available", camera != null);
-        telemetry.addData("Streaming", camera != null && camera.isStreaming());
-        if (camera != null) {
-            telemetry.addData("Settings", ArduCam.cameraSettingsStatus);
-            telemetry.addData("Clusters", camera.getVisibleClusterDetails());
-        }
+        telemetry.addData("Angle Trim", "%.2f deg", Turret.lastAngleTrimDeg);
+        telemetry.addData("Requested / Commanded", "%.1f / %.1f deg",
+                Turret.lastRelativeAngleDeg, Turret.lastFinalAngleDeg);
+        telemetry.addData("Servo", "%.3f", turret.getServoPosition());
+        telemetry.addData("Reachable", turret.isTargetReachable());
+        telemetry.addData("Turret used pose", "(%.2f, %.2f, %.0f deg)",
+                Turret.lastRobotX, Turret.lastRobotY, Turret.lastRobotHeadingDeg);
 
         telemetry.addLine("=== CONTROLS ===");
         telemetry.addLine("G1 Cross: shooter on | Triangle: off");
@@ -608,6 +610,7 @@ public class CombinedTeleOp extends OpMode {
         telemetry.addLine("G1 RB: collect / shooter off");
         telemetry.addLine("G1 Square: auto aim");
         telemetry.addLine("G2 Square: centre / fixed shooting");
+        telemetry.addLine("G2 Cross/Circle/Triangle: lower/upper/auto goal");
         telemetry.addLine("G2 D-pad up/down: corner reset");
         telemetry.update();
     }
@@ -623,7 +626,6 @@ public class CombinedTeleOp extends OpMode {
         if (intake != null) intake.stopIntake();
         if (robotSettings != null) robotSettings.block();
         if (turret != null) turret.setCentre();
-        if (camera != null) { camera.close(); camera = null; }
         if (follower != null) {
             follower.manual(new DrivePowers(0.0, 0.0, 0.0));
             follower.update();

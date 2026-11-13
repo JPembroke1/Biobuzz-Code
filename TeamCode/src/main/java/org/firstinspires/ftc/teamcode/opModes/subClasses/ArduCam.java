@@ -5,6 +5,7 @@ import android.graphics.Canvas;
 import android.util.Size;
 
 import com.bylazar.camerastream.PanelsCameraStream;
+import com.bylazar.configurables.annotations.Configurable;
 import com.qualcomm.robotcore.hardware.HardwareMap;
 
 import org.firstinspires.ftc.robotcore.external.function.Consumer;
@@ -38,39 +39,41 @@ import java.util.concurrent.atomic.AtomicReference;
 /**
  * Arducam / VisionPortal subsystem for FTC SDK 12 and BIOBUZZ.
  *
- * Features:
+ * Optimisation notes (vs. previous version):
  *
- * - Official BIOBUZZ AprilTag library
- * - SDK 12 single-tag and cluster detections
- * - Official HIVE member-tag ranges
- * - HIVE alliance and CELL-side identification
- * - Immediate HIVE visibility
- * - Active/upward CELL selection
- * - Debounced HIVE state
- * - Latched HIVE-tip detection
- * - Turret-fusion detection access
- * - Configurable AprilTag decimation
- * - Configurable manual exposure and gain
- * - Panels dashboard streaming
+ * - Panels stream reuses two bitmaps and only copies every Nth frame
+ *   (STREAM_ENABLED / STREAM_EVERY_N_FRAMES), so it no longer competes
+ *   with AprilTag processing.
+ * - Detections are snapshotted once per camera frame. Every getter reads
+ *   the same cached snapshot, so a single OpMode loop always sees one
+ *   consistent frame and nothing is re-allocated per call.
+ * - getFrameId() lets consumers (Turret) act only on NEW frames.
+ * - Cached snapshots expire after DETECTION_MAX_AGE_MS if vision stalls.
+ * - Exposure/gain are applied with delay, retry and live re-apply when the
+ *   Panels values change.
+ * - Decimation can be changed live from Panels.
+ * - FPS, pose-solve time, detection age and lens-intrinsics diagnostics.
+ * - HIVE debounce counters advance per camera frame, not per OpMode loop.
+ * - getTurretDetection() gives the turret one sticky target selection.
  *
- * SDK 12 detection structure:
+ * Usage:
  *
- * AprilTagDetection
- *   |- AprilTagSingleDetection
- *   |    |- id
- *   |    |- metadata
- *   |
- *   |- AprilTagClusterDetection
- *        |- cluster metadata
- *        |- cluster name
- *
- * ftcPose is available through the common AprilTagDetection base class.
+ * Optionally call camera.update() once at the top of every loop. If you
+ * never call it, the class refreshes itself automatically on each getter.
  */
+@Configurable
 public class ArduCam {
 
     // ---------------------------------------------------------------------
     // Panels camera stream
     // ---------------------------------------------------------------------
+
+    /*
+     * Turn the stream off completely during competition if every bit of
+     * vision CPU matters. Streaming every 3rd frame is plenty for tuning.
+     */
+    public static boolean STREAM_ENABLED = true;
+    public static int STREAM_EVERY_N_FRAMES = 3;
 
     private static class PanelsStreamProcessor
             implements VisionProcessor, CameraStreamSource {
@@ -84,6 +87,13 @@ public class ArduCam {
                         )
                 );
 
+        /*
+         * Two reusable buffers: one being displayed, one being written.
+         */
+        private final Bitmap[] buffers = new Bitmap[2];
+        private int bufferIndex = 0;
+        private int frameCounter = 0;
+
         @Override
         public void init(
                 int width,
@@ -91,13 +101,21 @@ public class ArduCam {
                 CameraCalibration calibration
         ) {
 
-            lastFrame.set(
+            buffers[0] =
                     Bitmap.createBitmap(
                             width,
                             height,
                             Bitmap.Config.RGB_565
-                    )
-            );
+                    );
+
+            buffers[1] =
+                    Bitmap.createBitmap(
+                            width,
+                            height,
+                            Bitmap.Config.RGB_565
+                    );
+
+            lastFrame.set(buffers[0]);
         }
 
         @Override
@@ -106,19 +124,47 @@ public class ArduCam {
                 long captureTimeNanos
         ) {
 
-            Bitmap bitmap =
-                    Bitmap.createBitmap(
-                            frame.width(),
-                            frame.height(),
-                            Bitmap.Config.RGB_565
+            if (!STREAM_ENABLED) {
+                return null;
+            }
+
+            frameCounter++;
+
+            int every =
+                    Math.max(
+                            1,
+                            STREAM_EVERY_N_FRAMES
                     );
+
+            if (frameCounter % every != 0) {
+                return null;
+            }
+
+            Bitmap target =
+                    buffers[bufferIndex];
+
+            if (target == null
+                    || target.getWidth() != frame.width()
+                    || target.getHeight() != frame.height()) {
+
+                target =
+                        Bitmap.createBitmap(
+                                frame.width(),
+                                frame.height(),
+                                Bitmap.Config.RGB_565
+                        );
+
+                buffers[bufferIndex] = target;
+            }
 
             Utils.matToBitmap(
                     frame,
-                    bitmap
+                    target
             );
 
-            lastFrame.set(bitmap);
+            lastFrame.set(target);
+
+            bufferIndex ^= 1;
 
             return null;
         }
@@ -190,6 +236,25 @@ public class ArduCam {
             return alliance
                     + "_"
                     + side;
+        }
+    }
+
+    /**
+     * A cluster detection paired with its resolved HIVE cell.
+     * Built once per camera frame.
+     */
+    private static class HiveEntry {
+
+        final AprilTagClusterDetection detection;
+        final HiveCell cell;
+
+        HiveEntry(
+                AprilTagClusterDetection detection,
+                HiveCell cell
+        ) {
+
+            this.detection = detection;
+            this.cell = cell;
         }
     }
 
@@ -270,6 +335,9 @@ public class ArduCam {
     // HIVE state configuration
     // ---------------------------------------------------------------------
 
+    /*
+     * These now count CAMERA FRAMES, not OpMode loops.
+     */
     public static int HIVE_STATE_FRAMES_TO_CONFIRM = 5;
 
     public static int TIP_FRAMES_TO_CONFIRM = 3;
@@ -290,21 +358,32 @@ public class ArduCam {
 
     /*
      * Lower decimation retains more image detail at the cost of CPU.
+     * Changes made from Panels are applied live.
      *
-     * Suggested values:
-     *
-     * 2.0 = lighter processing
-     * 1.5 = recommended starting point
+     * 3.0 = fastest, short range only
+     * 2.0 = balanced starting point (default)
+     * 1.5 = more range, more CPU
      * 1.0 = maximum detail and CPU load
+     *
+     * Watch fps and poseSolveMs while tuning.
      */
-    public static float APRILTAG_DECIMATION = 1.5f;
+    public static float APRILTAG_DECIMATION = 2.0f;
+
+    /*
+     * Cached detections older than this are discarded (vision stalled).
+     */
+    public static long DETECTION_MAX_AGE_MS = 300;
 
     // ---------------------------------------------------------------------
     // Exposure and gain tuning
     //
     // These are starting values, not universal Arducam values.
     //
-    // Tune under representative competition lighting.
+    // Tune under representative competition lighting. A moving turret
+    // needs a SHORT exposure to avoid motion blur (try 3-6 ms with more
+    // gain).
+    //
+    // Changes made from Panels are re-applied automatically.
     // ---------------------------------------------------------------------
 
     public static boolean MANUAL_EXPOSURE_ENABLED = true;
@@ -312,6 +391,10 @@ public class ArduCam {
     public static int EXPOSURE_MS = 6;
 
     public static int CAMERA_GAIN = 80;
+
+    public static int MAX_SETTINGS_ATTEMPTS = 5;
+    public static long SETTINGS_START_DELAY_MS = 500;
+    public static long SETTINGS_RETRY_DELAY_MS = 500;
 
     /*
      * Public diagnostic fields for telemetry.
@@ -324,10 +407,51 @@ public class ArduCam {
     public static String cameraSettingsStatus =
             "WAITING FOR CAMERA";
 
+    public static String lensIntrinsicsStatus =
+            "NOT INITIALIZED";
+
+    private int settingsAttempts = 0;
+    private long streamingSinceNs = 0L;
+    private long lastSettingsAttemptNs = 0L;
+
+    private int configuredExposureMs = Integer.MIN_VALUE;
+    private int configuredGain = Integer.MIN_VALUE;
+
+    private float appliedDecimation = Float.NaN;
+
+    // ---------------------------------------------------------------------
+    // Per-frame detection snapshot
+    // ---------------------------------------------------------------------
+
+    private List<AprilTagDetection> cachedDetections =
+            Collections.emptyList();
+
+    private List<AprilTagSingleDetection> cachedSingles =
+            Collections.emptyList();
+
+    private List<AprilTagClusterDetection> cachedClusters =
+            Collections.emptyList();
+
+    private List<AprilTagSingleDetection> cachedMemberTags =
+            Collections.emptyList();
+
+    private List<HiveEntry> cachedHiveEntries =
+            Collections.emptyList();
+
+    private List<AprilTagClusterDetection> cachedHiveDetections =
+            Collections.emptyList();
+
+    private HiveCell cachedMemberCell = null;
+
+    private long cachedAtNs = 0L;
+
+    private long frameId = 0L;
+
     /*
-     * Prevent unsupported camera controls from being retried every frame.
+     * Once update() has been called by the OpMode, getters stop
+     * refreshing on their own so a whole loop sees one frame.
      */
-    private boolean cameraSettingsAttempted = false;
+    private boolean manualUpdateUsed = false;
 
     // ---------------------------------------------------------------------
     // HIVE state tracking
@@ -341,11 +465,21 @@ public class ArduCam {
 
     private int candidateStateFrames = 0;
 
+    private long lastStateFrameId = -1L;
+
     private boolean hiveTipDetected = false;
 
     private int hiveTipCandidateFrames = 0;
 
+    private long lastTipFrameId = -1L;
+
     private Alliance hiveTipAlliance = null;
+
+    // ---------------------------------------------------------------------
+    // Turret target selection (sticky)
+    // ---------------------------------------------------------------------
+
+    private String turretTargetKey = null;
 
     // ---------------------------------------------------------------------
     // Hardware and VisionPortal
@@ -514,11 +648,11 @@ public class ArduCam {
             return;
         }
 
-        cameraSettingsApplied = false;
-        cameraSettingsAttempted = false;
+        resetCameraSettingsState();
 
-        appliedExposureMs = -1;
-        appliedGain = -1;
+        clearCaches();
+
+        cachedAtNs = 0L;
 
         cameraSettingsStatus =
                 "INITIALIZING";
@@ -537,6 +671,10 @@ public class ArduCam {
 
         /*
          * Lens intrinsics must be supplied as a complete set.
+         *
+         * Without them the SDK uses a built-in calibration, if it has one
+         * for this camera and resolution. A wrong calibration gives wrong
+         * bearing and range, which makes the turret gates reject tags.
          */
         if (fx != null
                 && fy != null
@@ -549,25 +687,37 @@ public class ArduCam {
                     cx,
                     cy
             );
+
+            lensIntrinsicsStatus =
+                    String.format(
+                            Locale.US,
+                            "CUSTOM fx=%.1f fy=%.1f cx=%.1f cy=%.1f @%dx%d",
+                            fx,
+                            fy,
+                            cx,
+                            cy,
+                            resolutionWidth,
+                            resolutionHeight
+                    );
+
+        } else {
+
+            lensIntrinsicsStatus =
+                    "NOT SET - SDK default used. Calibrate the Arducam at "
+                            + resolutionWidth
+                            + "x"
+                            + resolutionHeight
+                            + " and call setLensIntrinsics()";
         }
 
         aprilTag =
                 tagBuilder.build();
 
-        /*
-         * Lower decimation preserves more detail for distant or small
-         * AprilTags.
-         */
-        if (Float.isFinite(APRILTAG_DECIMATION)
-                && APRILTAG_DECIMATION > 0.0f) {
-
-            aprilTag.setDecimation(
-                    APRILTAG_DECIMATION
-            );
-        }
+        applyDecimationIfChanged();
 
         /*
-         * Panels stream remains enabled for camera tuning.
+         * Panels stream remains available for camera tuning, but is
+         * throttled and can be disabled with STREAM_ENABLED.
          */
         streamProcessor =
                 new PanelsStreamProcessor();
@@ -609,15 +759,284 @@ public class ArduCam {
     }
 
     // ---------------------------------------------------------------------
-    // Exposure and gain
+    // Per-loop update and snapshot handling
     // ---------------------------------------------------------------------
 
     /**
-     * Applies manual exposure and gain once VisionPortal reaches
-     * STREAMING.
+     * Optional. Call once at the top of every OpMode loop.
      *
-     * This is non-blocking and can safely be called every OpMode loop.
-     * Work is performed only once.
+     * Applies camera settings and live decimation changes, and pulls the
+     * newest frame result. After this has been called once, getters read
+     * the cached snapshot without refreshing, so one loop always sees one
+     * consistent frame.
+     */
+    public void update() {
+
+        manualUpdateUsed = true;
+
+        updateCameraSettings();
+
+        refreshFromProcessor();
+
+        expireStaleCache();
+    }
+
+    private void prepare() {
+
+        if (!manualUpdateUsed) {
+
+            updateCameraSettings();
+
+            refreshFromProcessor();
+        }
+
+        expireStaleCache();
+    }
+
+    private void refreshFromProcessor() {
+
+        if (!enabled
+                || aprilTag == null) {
+
+            return;
+        }
+
+        /*
+         * Returns null when no new frame has been processed since the last
+         * call, so this is cheap to call every loop.
+         */
+        List<AprilTagDetection> fresh =
+                aprilTag.getFreshDetections();
+
+        if (fresh == null) {
+            return;
+        }
+
+        cachedDetections = fresh;
+        cachedAtNs = System.nanoTime();
+        frameId++;
+
+        rebuildCaches();
+    }
+
+    private void expireStaleCache() {
+
+        if (cachedAtNs == 0L
+                || cachedDetections.isEmpty()) {
+
+            return;
+        }
+
+        if (getDetectionAgeMs()
+                > Math.max(
+                1L,
+                DETECTION_MAX_AGE_MS
+        )) {
+
+            clearCaches();
+        }
+    }
+
+    private void clearCaches() {
+
+        cachedDetections = Collections.emptyList();
+        cachedSingles = Collections.emptyList();
+        cachedClusters = Collections.emptyList();
+        cachedMemberTags = Collections.emptyList();
+        cachedHiveEntries = Collections.emptyList();
+        cachedHiveDetections = Collections.emptyList();
+        cachedMemberCell = null;
+    }
+
+    private void rebuildCaches() {
+
+        List<AprilTagSingleDetection> singles =
+                new ArrayList<>();
+
+        List<AprilTagClusterDetection> clusters =
+                new ArrayList<>();
+
+        List<AprilTagSingleDetection> members =
+                new ArrayList<>();
+
+        HiveCell memberCell =
+                null;
+
+        for (AprilTagDetection detection
+                : cachedDetections) {
+
+            if (detection
+                    instanceof AprilTagSingleDetection) {
+
+                AprilTagSingleDetection single =
+                        (AprilTagSingleDetection) detection;
+
+                singles.add(single);
+
+                HiveCell cell =
+                        getHiveCellFromTagId(
+                                single.id
+                        );
+
+                if (cell != null) {
+
+                    members.add(single);
+
+                    if (memberCell == null) {
+                        memberCell = cell;
+                    }
+                }
+
+            } else if (detection
+                    instanceof AprilTagClusterDetection) {
+
+                clusters.add(
+                        (AprilTagClusterDetection) detection
+                );
+            }
+        }
+
+        List<HiveEntry> entries =
+                new ArrayList<>();
+
+        List<AprilTagClusterDetection> hiveDetections =
+                new ArrayList<>();
+
+        for (AprilTagClusterDetection cluster
+                : clusters) {
+
+            HiveCell cell =
+                    resolveHiveCell(
+                            cluster,
+                            clusters.size(),
+                            memberCell
+                    );
+
+            if (cell != null) {
+
+                entries.add(
+                        new HiveEntry(
+                                cluster,
+                                cell
+                        )
+                );
+
+                hiveDetections.add(cluster);
+            }
+        }
+
+        cachedSingles =
+                Collections.unmodifiableList(singles);
+
+        cachedClusters =
+                Collections.unmodifiableList(clusters);
+
+        cachedMemberTags =
+                Collections.unmodifiableList(members);
+
+        cachedHiveEntries =
+                Collections.unmodifiableList(entries);
+
+        cachedHiveDetections =
+                Collections.unmodifiableList(
+                        hiveDetections
+                );
+
+        cachedMemberCell = memberCell;
+    }
+
+    /**
+     * Monotonically increasing ID of the newest processed camera frame.
+     * Consumers can compare it with the last value they used to act only
+     * on new frames.
+     */
+    public long getFrameId() {
+
+        prepare();
+
+        return frameId;
+    }
+
+    public double getDetectionAgeMs() {
+
+        if (cachedAtNs == 0L) {
+            return Double.POSITIVE_INFINITY;
+        }
+
+        return (System.nanoTime() - cachedAtNs)
+                / 1_000_000.0;
+    }
+
+    // ---------------------------------------------------------------------
+    // Camera diagnostics
+    // ---------------------------------------------------------------------
+
+    public double getFps() {
+
+        return visionPortal == null
+                ? 0.0
+                : visionPortal.getFps();
+    }
+
+    public double getPoseSolveMs() {
+
+        return aprilTag == null
+                ? 0.0
+                : aprilTag.getPerTagAvgPoseSolveTime();
+    }
+
+    // ---------------------------------------------------------------------
+    // Decimation, exposure and gain
+    // ---------------------------------------------------------------------
+
+    private void applyDecimationIfChanged() {
+
+        if (aprilTag == null
+                || !Float.isFinite(APRILTAG_DECIMATION)
+                || APRILTAG_DECIMATION <= 0.0f) {
+
+            return;
+        }
+
+        if (Float.compare(
+                appliedDecimation,
+                APRILTAG_DECIMATION
+        ) == 0) {
+
+            return;
+        }
+
+        aprilTag.setDecimation(
+                APRILTAG_DECIMATION
+        );
+
+        appliedDecimation =
+                APRILTAG_DECIMATION;
+    }
+
+    private void resetCameraSettingsState() {
+
+        cameraSettingsApplied = false;
+
+        settingsAttempts = 0;
+        streamingSinceNs = 0L;
+        lastSettingsAttemptNs = 0L;
+
+        configuredExposureMs = Integer.MIN_VALUE;
+        configuredGain = Integer.MIN_VALUE;
+
+        appliedExposureMs = -1;
+        appliedGain = -1;
+    }
+
+    /**
+     * Applies manual exposure and gain once VisionPortal has been
+     * STREAMING for a short settling time.
+     *
+     * Non-blocking and safe to call every OpMode loop. If the camera
+     * rejects the settings it is retried up to MAX_SETTINGS_ATTEMPTS
+     * times. Changing EXPOSURE_MS or CAMERA_GAIN from Panels re-applies
+     * them automatically.
      */
     public void updateCameraSettings() {
 
@@ -629,6 +1048,8 @@ public class ArduCam {
             return;
         }
 
+        applyDecimationIfChanged();
+
         if (!MANUAL_EXPOSURE_ENABLED) {
 
             cameraSettingsStatus =
@@ -637,9 +1058,17 @@ public class ArduCam {
             return;
         }
 
+        /*
+         * Live tuning from Panels.
+         */
         if (cameraSettingsApplied
-                || cameraSettingsAttempted) {
+                && (configuredExposureMs != EXPOSURE_MS
+                || configuredGain != CAMERA_GAIN)) {
 
+            requestCameraSettingsReapply();
+        }
+
+        if (cameraSettingsApplied) {
             return;
         }
 
@@ -649,6 +1078,8 @@ public class ArduCam {
         if (cameraState
                 != VisionPortal.CameraState.STREAMING) {
 
+            streamingSinceNs = 0L;
+
             cameraSettingsStatus =
                     "WAITING: "
                             + cameraState;
@@ -656,7 +1087,40 @@ public class ArduCam {
             return;
         }
 
-        cameraSettingsAttempted = true;
+        long nowNs =
+                System.nanoTime();
+
+        if (streamingSinceNs == 0L) {
+            streamingSinceNs = nowNs;
+        }
+
+        if (nowNs - streamingSinceNs
+                < SETTINGS_START_DELAY_MS * 1_000_000L) {
+
+            cameraSettingsStatus =
+                    "STREAM STABILISING";
+
+            return;
+        }
+
+        if (settingsAttempts
+                >= Math.max(
+                1,
+                MAX_SETTINGS_ATTEMPTS
+        )) {
+
+            return;
+        }
+
+        if (settingsAttempts > 0
+                && nowNs - lastSettingsAttemptNs
+                < SETTINGS_RETRY_DELAY_MS * 1_000_000L) {
+
+            return;
+        }
+
+        settingsAttempts++;
+        lastSettingsAttemptNs = nowNs;
 
         try {
 
@@ -675,6 +1139,9 @@ public class ArduCam {
                 cameraSettingsStatus =
                         "EXPOSURE CONTROL UNSUPPORTED";
 
+                settingsAttempts =
+                        MAX_SETTINGS_ATTEMPTS;
+
                 return;
             }
 
@@ -682,6 +1149,9 @@ public class ArduCam {
 
                 cameraSettingsStatus =
                         "GAIN CONTROL UNSUPPORTED";
+
+                settingsAttempts =
+                        MAX_SETTINGS_ATTEMPTS;
 
                 return;
             }
@@ -751,7 +1221,9 @@ public class ArduCam {
             if (!manualModeAccepted) {
 
                 cameraSettingsStatus =
-                        "MANUAL EXPOSURE REJECTED";
+                        "MANUAL EXPOSURE REJECTED (attempt "
+                                + settingsAttempts
+                                + ")";
 
                 return;
             }
@@ -767,17 +1239,22 @@ public class ArduCam {
                             requestedGain
                     );
 
-            appliedExposureMs =
-                    (int) requestedExposureMs;
+            if (exposureAccepted
+                    && gainAccepted) {
 
-            appliedGain =
-                    requestedGain;
+                appliedExposureMs =
+                        (int) requestedExposureMs;
 
-            cameraSettingsApplied =
-                    exposureAccepted
-                            && gainAccepted;
+                appliedGain =
+                        requestedGain;
 
-            if (cameraSettingsApplied) {
+                configuredExposureMs =
+                        EXPOSURE_MS;
+
+                configuredGain =
+                        CAMERA_GAIN;
+
+                cameraSettingsApplied = true;
 
                 cameraSettingsStatus =
                         "MANUAL SETTINGS APPLIED";
@@ -785,7 +1262,9 @@ public class ArduCam {
             } else {
 
                 cameraSettingsStatus =
-                        "CAMERA REJECTED SETTINGS";
+                        "CAMERA REJECTED SETTINGS (attempt "
+                                + settingsAttempts
+                                + ")";
             }
 
         } catch (RuntimeException exception) {
@@ -796,93 +1275,58 @@ public class ArduCam {
                     "SETTINGS ERROR: "
                             + exception
                             .getClass()
-                            .getSimpleName();
+                            .getSimpleName()
+                            + " (attempt "
+                            + settingsAttempts
+                            + ")";
         }
     }
 
     /**
-     * Allows dashboard values to be reapplied during testing.
-     *
-     * Call after changing EXPOSURE_MS or CAMERA_GAIN.
+     * Forces exposure and gain to be applied again.
      */
     public void requestCameraSettingsReapply() {
 
         cameraSettingsApplied = false;
-        cameraSettingsAttempted = false;
 
-        appliedExposureMs = -1;
-        appliedGain = -1;
+        settingsAttempts = 0;
+        streamingSinceNs = 0L;
+        lastSettingsAttemptNs = 0L;
+
+        configuredExposureMs = Integer.MIN_VALUE;
+        configuredGain = Integer.MIN_VALUE;
 
         cameraSettingsStatus =
                 "REAPPLY REQUESTED";
     }
 
     // ---------------------------------------------------------------------
-    // General detection access
+    // General detection access (cached snapshot)
     // ---------------------------------------------------------------------
 
     public List<AprilTagDetection> getDetections() {
 
-        /*
-         * Applies exposure and gain as soon as the camera reaches the
-         * STREAMING state.
-         */
-        updateCameraSettings();
+        prepare();
 
-        if (!enabled
-                || aprilTag == null) {
-
-            return Collections.emptyList();
-        }
-
-        List<AprilTagDetection> detections =
-                aprilTag.getDetections();
-
-        return detections == null
-                ? Collections.emptyList()
-                : detections;
+        return enabled
+                ? cachedDetections
+                : Collections.<AprilTagDetection>emptyList();
     }
 
     public List<AprilTagSingleDetection>
     getSingleDetections() {
 
-        List<AprilTagSingleDetection> result =
-                new ArrayList<>();
+        prepare();
 
-        for (AprilTagDetection detection
-                : getDetections()) {
-
-            if (detection
-                    instanceof AprilTagSingleDetection) {
-
-                result.add(
-                        (AprilTagSingleDetection) detection
-                );
-            }
-        }
-
-        return result;
+        return cachedSingles;
     }
 
     public List<AprilTagClusterDetection>
     getClusterDetections() {
 
-        List<AprilTagClusterDetection> result =
-                new ArrayList<>();
+        prepare();
 
-        for (AprilTagDetection detection
-                : getDetections()) {
-
-            if (detection
-                    instanceof AprilTagClusterDetection) {
-
-                result.add(
-                        (AprilTagClusterDetection) detection
-                );
-            }
-        }
-
-        return result;
+        return cachedClusters;
     }
 
     /**
@@ -917,13 +1361,8 @@ public class ArduCam {
         for (AprilTagClusterDetection detection
                 : getClusterDetections()) {
 
-            String detectedName =
-                    getClusterName(
-                            detection
-                    );
-
             if (clusterName.equals(
-                    detectedName
+                    getClusterName(detection)
             )) {
 
                 return detection;
@@ -968,9 +1407,7 @@ public class ArduCam {
                 : getClusterDetections()) {
 
             String name =
-                    getClusterName(
-                            detection
-                    );
+                    getClusterName(detection);
 
             if (name != null
                     && !names.contains(name)) {
@@ -989,16 +1426,6 @@ public class ArduCam {
 
         for (AprilTagClusterDetection detection
                 : getClusterDetections()) {
-
-            String name =
-                    getClusterName(
-                            detection
-                    );
-
-            String shortName =
-                    getClusterShortName(
-                            detection
-                    );
 
             String poseDetails;
 
@@ -1022,9 +1449,9 @@ public class ArduCam {
 
             details.add(
                     "name="
-                            + String.valueOf(name)
+                            + getClusterName(detection)
                             + " | shortName="
-                            + String.valueOf(shortName)
+                            + getClusterShortName(detection)
                             + " | "
                             + poseDetails
             );
@@ -1040,39 +1467,16 @@ public class ArduCam {
     public List<AprilTagSingleDetection>
     getVisibleHiveMemberTags() {
 
-        List<AprilTagSingleDetection> result =
-                new ArrayList<>();
+        prepare();
 
-        for (AprilTagSingleDetection detection
-                : getSingleDetections()) {
-
-            if (isHiveMemberTag(
-                    detection.id
-            )) {
-
-                result.add(detection);
-            }
-        }
-
-        return result;
+        return cachedMemberTags;
     }
 
     public HiveCell getVisibleHiveCellFromMemberTags() {
 
-        for (AprilTagSingleDetection detection
-                : getVisibleHiveMemberTags()) {
+        prepare();
 
-            HiveCell cell =
-                    getHiveCellFromTagId(
-                            detection.id
-                    );
-
-            if (cell != null) {
-                return cell;
-            }
-        }
-
-        return null;
+        return cachedMemberCell;
     }
 
     // ---------------------------------------------------------------------
@@ -1082,10 +1486,14 @@ public class ArduCam {
     //
     // Single member-tag IDs provide a conservative identity fallback
     // when exactly one cluster is visible.
+    //
+    // Resolved once per camera frame in rebuildCaches().
     // ---------------------------------------------------------------------
 
-    private HiveCell getHiveCell(
-            AprilTagClusterDetection detection
+    private HiveCell resolveHiveCell(
+            AprilTagClusterDetection detection,
+            int visibleClusterCount,
+            HiveCell memberCell
     ) {
 
         if (detection == null) {
@@ -1101,24 +1509,39 @@ public class ArduCam {
             return metadataCell;
         }
 
-        List<AprilTagClusterDetection> clusters =
-                getClusterDetections();
-
-        HiveCell memberCell =
-                getVisibleHiveCellFromMemberTags();
-
         /*
          * Only associate a member-tag identity with a cluster when there
          * is exactly one visible cluster. This avoids assigning one
          * member-tag group to the wrong cluster.
          */
-        if (clusters.size() == 1
+        if (visibleClusterCount == 1
                 && memberCell != null) {
 
             return memberCell;
         }
 
         return null;
+    }
+
+    private HiveCell getHiveCell(
+            AprilTagClusterDetection detection
+    ) {
+
+        if (detection == null) {
+            return null;
+        }
+
+        for (HiveEntry entry
+                : cachedHiveEntries) {
+
+            if (entry.detection == detection) {
+                return entry.cell;
+            }
+        }
+
+        return getHiveCellFromClusterMetadata(
+                detection
+        );
     }
 
     private HiveCell getHiveCellFromClusterMetadata(
@@ -1240,10 +1663,7 @@ public class ArduCam {
 
         String paddedWord =
                 " "
-                        + word
-                        .toLowerCase(
-                                Locale.US
-                        )
+                        + word.toLowerCase(Locale.US)
                         + " ";
 
         return paddedText.contains(
@@ -1258,21 +1678,9 @@ public class ArduCam {
     public List<AprilTagClusterDetection>
     getHiveDetections() {
 
-        List<AprilTagClusterDetection> result =
-                new ArrayList<>();
+        prepare();
 
-        for (AprilTagClusterDetection detection
-                : getClusterDetections()) {
-
-            if (getHiveCell(
-                    detection
-            ) != null) {
-
-                result.add(detection);
-            }
-        }
-
-        return result;
+        return cachedHiveDetections;
     }
 
     // ---------------------------------------------------------------------
@@ -1290,20 +1698,16 @@ public class ArduCam {
             return false;
         }
 
+        prepare();
+
         /*
          * Prefer a full SDK 12 cluster detection with valid pose.
          */
-        for (AprilTagClusterDetection detection
-                : getHiveDetections()) {
+        for (HiveEntry entry
+                : cachedHiveEntries) {
 
-            HiveCell cell =
-                    getHiveCell(
-                            detection
-                    );
-
-            if (cell != null
-                    && cell.alliance == alliance
-                    && detection.ftcPose != null) {
+            if (entry.cell.alliance == alliance
+                    && entry.detection.ftcPose != null) {
 
                 return true;
             }
@@ -1316,7 +1720,7 @@ public class ArduCam {
          * cluster-pose fusion.
          */
         for (AprilTagSingleDetection detection
-                : getVisibleHiveMemberTags()) {
+                : cachedMemberTags) {
 
             HiveCell cell =
                     getHiveCellFromTagId(
@@ -1361,6 +1765,8 @@ public class ArduCam {
             return null;
         }
 
+        prepare();
+
         AprilTagClusterDetection best =
                 null;
 
@@ -1373,16 +1779,13 @@ public class ArduCam {
                         35.0
                 );
 
-        for (AprilTagClusterDetection detection
-                : getHiveDetections()) {
+        for (HiveEntry entry
+                : cachedHiveEntries) {
 
-            HiveCell cell =
-                    getHiveCell(
-                            detection
-                    );
+            AprilTagClusterDetection detection =
+                    entry.detection;
 
-            if (cell == null
-                    || cell.alliance != alliance
+            if (entry.cell.alliance != alliance
                     || detection.ftcPose == null) {
 
                 continue;
@@ -1418,22 +1821,21 @@ public class ArduCam {
             return null;
         }
 
+        prepare();
+
         AprilTagClusterDetection best =
                 null;
 
         double bestRange =
                 Double.MAX_VALUE;
 
-        for (AprilTagClusterDetection detection
-                : getHiveDetections()) {
+        for (HiveEntry entry
+                : cachedHiveEntries) {
 
-            HiveCell cell =
-                    getHiveCell(
-                            detection
-                    );
+            AprilTagClusterDetection detection =
+                    entry.detection;
 
-            if (cell == null
-                    || cell.alliance != alliance
+            if (entry.cell.alliance != alliance
                     || detection.ftcPose == null) {
 
                 continue;
@@ -1452,6 +1854,138 @@ public class ArduCam {
         }
 
         return best;
+    }
+
+    // ---------------------------------------------------------------------
+    // Turret target selection
+    // ---------------------------------------------------------------------
+
+    /**
+     * Returns the single cluster the turret should track.
+     *
+     * Selection is STICKY: once a cluster has been chosen, that same
+     * cluster is returned for as long as it stays visible. This stops the
+     * turret bearing from jumping between two clusters (for example an
+     * "active" cell on one frame and the "nearest" cell on the next).
+     *
+     * When the previous cluster is gone, the active (upward) cell is
+     * preferred, then the nearest HIVE cluster.
+     *
+     * getTurretTargetKey() returns the identity of the last selection so
+     * the caller can tell when the target changed.
+     */
+    public AprilTagClusterDetection getTurretDetection(
+            Alliance alliance
+    ) {
+
+        if (alliance == null) {
+            return null;
+        }
+
+        prepare();
+
+        double threshold =
+                validPositiveThreshold(
+                        UP_CELL_PITCH_THRESHOLD_DEG,
+                        35.0
+                );
+
+        HiveEntry bestActive = null;
+        double bestPitch = Double.MAX_VALUE;
+
+        HiveEntry bestNearest = null;
+        double bestRange = Double.MAX_VALUE;
+
+        for (HiveEntry entry
+                : cachedHiveEntries) {
+
+            AprilTagClusterDetection detection =
+                    entry.detection;
+
+            if (entry.cell.alliance != alliance
+                    || detection.ftcPose == null
+                    || !Double.isFinite(
+                    detection.ftcPose.bearing
+            )
+                    || !Double.isFinite(
+                    detection.ftcPose.range
+            )) {
+
+                continue;
+            }
+
+            if (turretTargetKey != null
+                    && turretTargetKey.equals(
+                    makeClusterKey(entry)
+            )) {
+
+                return detection;
+            }
+
+            double pitch =
+                    Math.abs(
+                            detection.ftcPose.pitch
+                    );
+
+            if (Double.isFinite(pitch)
+                    && pitch < threshold
+                    && pitch < bestPitch) {
+
+                bestPitch = pitch;
+                bestActive = entry;
+            }
+
+            double range =
+                    detection.ftcPose.range;
+
+            if (range >= 0.0
+                    && range < bestRange) {
+
+                bestRange = range;
+                bestNearest = entry;
+            }
+        }
+
+        HiveEntry chosen =
+                bestActive != null
+                        ? bestActive
+                        : bestNearest;
+
+        if (chosen == null) {
+            return null;
+        }
+
+        turretTargetKey =
+                makeClusterKey(chosen);
+
+        return chosen.detection;
+    }
+
+    /**
+     * Identity of the cluster last returned by getTurretDetection().
+     */
+    public String getTurretTargetKey() {
+
+        return turretTargetKey;
+    }
+
+    public void resetTurretTarget() {
+
+        turretTargetKey = null;
+    }
+
+    private String makeClusterKey(
+            HiveEntry entry
+    ) {
+
+        String name =
+                getClusterName(
+                        entry.detection
+                );
+
+        return name != null
+                ? name
+                : String.valueOf(entry.cell);
     }
 
     // ---------------------------------------------------------------------
@@ -1475,17 +2009,11 @@ public class ArduCam {
                         35.0
                 );
 
-        for (AprilTagClusterDetection detection
-                : getHiveDetections()) {
+        for (HiveEntry entry
+                : cachedHiveEntries) {
 
-            HiveCell cell =
-                    getHiveCell(
-                            detection
-                    );
-
-            if (cell == null
-                    || cell.alliance != alliance
-                    || detection.ftcPose == null) {
+            if (entry.cell.alliance != alliance
+                    || entry.detection.ftcPose == null) {
 
                 continue;
             }
@@ -1494,7 +2022,7 @@ public class ArduCam {
 
             double pitch =
                     Math.abs(
-                            detection.ftcPose.pitch
+                            entry.detection.ftcPose.pitch
                     );
 
             if (Double.isFinite(pitch)
@@ -1509,9 +2037,21 @@ public class ArduCam {
                 : HiveState.UNKNOWN;
     }
 
+    /**
+     * Debounced HIVE state. Advances once per CAMERA FRAME, so it is
+     * independent of how fast the OpMode loop runs.
+     */
     public HiveState updateHiveState(
             Alliance alliance
     ) {
+
+        prepare();
+
+        if (frameId == lastStateFrameId) {
+            return confirmedState;
+        }
+
+        lastStateFrameId = frameId;
 
         HiveState raw =
                 readRawState(
@@ -1571,6 +2111,14 @@ public class ArduCam {
             return hiveTipDetected;
         }
 
+        prepare();
+
+        if (frameId == lastTipFrameId) {
+            return hiveTipDetected;
+        }
+
+        lastTipFrameId = frameId;
+
         boolean tippedThisFrame =
                 false;
 
@@ -1580,24 +2128,18 @@ public class ArduCam {
                         35.0
                 );
 
-        for (AprilTagClusterDetection detection
-                : getHiveDetections()) {
+        for (HiveEntry entry
+                : cachedHiveEntries) {
 
-            HiveCell cell =
-                    getHiveCell(
-                            detection
-                    );
-
-            if (cell == null
-                    || cell.alliance != alliance
-                    || detection.ftcPose == null) {
+            if (entry.cell.alliance != alliance
+                    || entry.detection.ftcPose == null) {
 
                 continue;
             }
 
             double pitch =
                     Math.abs(
-                            detection.ftcPose.pitch
+                            entry.detection.ftcPose.pitch
                     );
 
             if (Double.isFinite(pitch)
@@ -1654,6 +2196,8 @@ public class ArduCam {
 
         hiveTipCandidateFrames = 0;
 
+        lastTipFrameId = -1L;
+
         hiveTipAlliance = null;
     }
 
@@ -1683,6 +2227,8 @@ public class ArduCam {
 
         candidateStateFrames = 0;
 
+        lastStateFrameId = -1L;
+
         resetHiveTipDetection();
     }
 
@@ -1696,7 +2242,11 @@ public class ArduCam {
 
         this.enabled = enabled;
 
+        clearCaches();
+
         resetHiveState();
+
+        resetTurretTarget();
 
         if (visionPortal != null
                 && aprilTag != null) {
@@ -1790,16 +2340,20 @@ public class ArduCam {
         aprilTag = null;
         streamProcessor = null;
 
-        cameraSettingsApplied = false;
-        cameraSettingsAttempted = false;
+        appliedDecimation = Float.NaN;
 
-        appliedExposureMs = -1;
-        appliedGain = -1;
+        resetCameraSettingsState();
+
+        clearCaches();
+
+        cachedAtNs = 0L;
 
         cameraSettingsStatus =
                 "CAMERA CLOSED";
 
         resetHiveState();
+
+        resetTurretTarget();
     }
 
     // ---------------------------------------------------------------------

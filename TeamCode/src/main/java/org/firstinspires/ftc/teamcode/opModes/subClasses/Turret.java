@@ -5,8 +5,20 @@ import com.pedropathing.math.Pose;
 import com.qualcomm.robotcore.hardware.HardwareMap;
 import com.qualcomm.robotcore.hardware.Servo;
 
-import org.firstinspires.ftc.vision.apriltag.AprilTagClusterDetection;
-
+/**
+ * Pinpoint/Pedro-only turret aiming.
+ *
+ * The turret angle is calculated from the robot pose and the goal
+ * coordinates. There is no camera involvement.
+ *
+ * Aim chain:
+ *
+ *   robot pose -> turret pivot position -> field angle to goal
+ *   -> angle relative to robot -> turret angle -> servo position
+ *
+ * An error anywhere in that chain shows up as a missed shot, so each link
+ * has its own calibration value below.
+ */
 @Configurable
 public class Turret {
 
@@ -19,7 +31,7 @@ public class Turret {
     private Servo turretServo;
 
     // ---------------------------------------------------------------------
-    // Confirmed physical calibration
+    // Servo calibration
     //
     // With robot heading = 180 degrees:
     //
@@ -44,20 +56,30 @@ public class Turret {
      */
     public static boolean REVERSE_AIM_MAPPING = true;
 
+    /*
+     * Turret rotation produced by moving the servo across its FULL range
+     * (0.0 to 1.0).
+     *
+     * 180 matches your endpoint measurements (servo 0.0 = +90 degrees,
+     * 1.0 = -90 degrees from centre). If shots are accurate near the
+     * middle but increasingly wrong at larger turret angles, this value is
+     * the first thing to check. See the mid-range check in the notes.
+     */
+    public static double SERVO_RANGE_DEG = 180.0;
+
     // ---------------------------------------------------------------------
-    // Automatic aiming limit
+    // Automatic aiming
     //
-    // Fixed autonomous servo commands retain the full 0.0 to 1.0 range.
+    // Fixed servo commands retain the full 0.0 to 1.0 range.
     // ---------------------------------------------------------------------
 
     public static double AUTO_AIM_MAX_ANGLE_DEG = 75.0;
 
-    // ---------------------------------------------------------------------
-    // Base aim tuning
-    //
-    // AIM_OFFSET is a servo-position offset, not degrees.
-    // ---------------------------------------------------------------------
-
+    /*
+     * AIM_OFFSET is a servo-position offset, not degrees.
+     * AIM_GAIN scales the requested angle before it is limited and
+     * converted. Leave at 1.0 and use SERVO_RANGE_DEG for scale errors.
+     */
     public static double AIM_OFFSET = 0.0;
     public static double AIM_GAIN = 1.0;
 
@@ -67,7 +89,7 @@ public class Turret {
     public static double TURRET_ZERO_OFFSET_DEG = 180.0;
 
     // ---------------------------------------------------------------------
-    // Turret pivot offset from Pedro/Pinpoint reference point
+    // Turret pivot offset from the Pedro/Pinpoint reference point
     //
     // Robot frame:
     //
@@ -75,6 +97,11 @@ public class Turret {
     // +Y = robot left
     //
     // Units: inches.
+    //
+    // MEASURE THESE. They are the distance from the Pinpoint reference
+    // point to the turret's axis of rotation. Left at 0 the error is small
+    // from far away but large up close (a 3 inch offset at 12 inches is
+    // about 14 degrees).
     // ---------------------------------------------------------------------
 
     public static double TURRET_OFFSET_X_IN = 0.0;
@@ -92,60 +119,7 @@ public class Turret {
     public static double VELOCITY_LEAD_GAIN = 0.3;
 
     // ---------------------------------------------------------------------
-    // Turret-mounted Arducam fusion
-    //
-    // Pinpoint/Pedro supplies the coarse absolute turret angle.
-    //
-    // Because the camera rotates with the turret:
-    //
-    // camera turret estimate =
-    // current commanded turret angle + visual bearing correction
-    // ---------------------------------------------------------------------
-
-    public static boolean CAMERA_FUSION_ENABLED = true;
-
-    /*
-     * If positive bearing moves farther away from zero during testing,
-     * change this to -1.0.
-     */
-    public static double CAMERA_BEARING_SIGN = 1.0;
-
-    public static double CAMERA_CORRECTION_GAIN = 0.60;
-
-    /*
-     * Camera optical-axis to shooter alignment correction in degrees.
-     */
-    public static double CAMERA_AIM_OFFSET_DEG = 0.0;
-
-    public static double CAMERA_DEADBAND_DEG = 0.75;
-    public static double CAMERA_MAX_CORRECTION_DEG = 8.0;
-
-    public static double CAMERA_MIN_RANGE_IN = 6.0;
-    public static double CAMERA_MAX_RANGE_IN = 120.0;
-
-    public static double CAMERA_MAX_ABS_BEARING_DEG = 45.0;
-
-    public static double CAMERA_FILTER_ALPHA = 0.35;
-
-    /*
-     * 0.0 = Pinpoint only
-     * 1.0 = camera estimate only
-     */
-    public static double CAMERA_FUSION_WEIGHT = 0.75;
-
-    public static double CAMERA_SHOOT_TOLERANCE_DEG = 2.0;
-
-    /*
-     * Camera range-based confidence.
-     */
-    public static double CAMERA_FULL_WEIGHT_RANGE_IN = 30.0;
-    public static double CAMERA_ZERO_WEIGHT_RANGE_IN = 100.0;
-
-    private double filteredCameraBearingDeg = 0.0;
-    private boolean cameraBearingPrimed = false;
-
-    // ---------------------------------------------------------------------
-    // Goal compatibility
+    // Goal coordinates (field frame, inches)
     // ---------------------------------------------------------------------
 
     public enum Goal {
@@ -154,11 +128,53 @@ public class Turret {
         CUSTOM
     }
 
+    public enum GoalHeight {
+        HIGH,
+        LOW
+    }
+
+    /*
+     * Which goal height is being aimed at. A plain boolean so it can be
+     * switched live from Panels as well as from code
+     * (setHighGoal / setLowGoal / toggleGoalHeight).
+     */
+    public static boolean LOW_GOAL_SELECTED = false;
+
+    /*
+     * HIGH goal coordinates.
+     *
+     * These keep their original names so existing code and Panels values
+     * still work.
+     */
     public static double RED_GOAL_X = Double.NaN;
     public static double RED_GOAL_Y = Double.NaN;
 
     public static double BLUE_GOAL_X = Double.NaN;
     public static double BLUE_GOAL_Y = Double.NaN;
+
+    /*
+     * LOW goal coordinates.
+     *
+     * Edit these live in Panels while the turret is aiming. Changes are
+     * picked up on the next loop, so you can nudge the point until the
+     * shots land.
+     */
+    public static double RED_LOW_GOAL_X = Double.NaN;
+    public static double RED_LOW_GOAL_Y = Double.NaN;
+
+    public static double BLUE_LOW_GOAL_X = Double.NaN;
+    public static double BLUE_LOW_GOAL_Y = Double.NaN;
+
+    /*
+     * Per-height angle trim, in degrees, added to the requested turret
+     * angle for that goal height.
+     *
+     * Positive turns the aim counter-clockwise (left, seen from above).
+     * Use the trim for a consistent angular error at every distance, and
+     * the goal coordinates for an error that changes with distance.
+     */
+    public static double HIGH_GOAL_ANGLE_TRIM_DEG = 0.0;
+    public static double LOW_GOAL_ANGLE_TRIM_DEG = 0.0;
 
     private Goal selectedGoal = Goal.CUSTOM;
     private Pose targetPose = null;
@@ -170,7 +186,6 @@ public class Turret {
     public enum AimSource {
         NONE,
         PINPOINT,
-        FUSED,
         FIXED
     }
 
@@ -193,11 +208,19 @@ public class Turret {
     public static double lastDistanceToTargetIn = Double.NaN;
 
     public static double lastFieldTargetAngleDeg = Double.NaN;
+
+    /*
+     * Requested turret angle before the +/- limit is applied.
+     */
     public static double lastRelativeAngleDeg = Double.NaN;
 
     public static double lastVelocityLeadX = 0.0;
     public static double lastVelocityLeadY = 0.0;
 
+    /*
+     * Turret angle actually commanded (after the limit), and the servo
+     * position sent to the hardware.
+     */
     public static double lastFinalAngleDeg = 0.0;
     public static double lastServoPosition = 0.5;
 
@@ -211,19 +234,15 @@ public class Turret {
 
     public static String lastAimSource = "NONE";
 
-    public static boolean lastCameraTargetVisible = false;
-    public static boolean lastCameraTargetValid = false;
-    public static boolean lastCameraAligned = false;
+    public static String lastGoalHeight = "HIGH";
+    public static double lastAngleTrimDeg = 0.0;
 
-    public static double lastCameraBearingDeg = Double.NaN;
-    public static double lastFilteredCameraBearingDeg = Double.NaN;
-    public static double lastCameraRangeIn = Double.NaN;
-    public static double lastCameraCorrectionDeg = 0.0;
-    public static double lastCameraWeight = 0.0;
-
-    public static double lastPinpointAngleDeg = Double.NaN;
-    public static double lastCameraEstimateAngleDeg = Double.NaN;
-    public static double lastFusedAngleDeg = Double.NaN;
+    /*
+     * True when an alliance goal is selected but the coordinates for the
+     * current goal height are not set (NaN). The turret centres instead of
+     * aiming at the wrong goal.
+     */
+    public static boolean lastTargetMissing = false;
 
     // ---------------------------------------------------------------------
     // Initialization
@@ -278,19 +297,48 @@ public class Turret {
         double targetX;
         double targetY;
 
+        boolean low = LOW_GOAL_SELECTED;
+
         if (goal == Goal.RED) {
 
-            targetX = RED_GOAL_X;
-            targetY = RED_GOAL_Y;
+            targetX = low ? RED_LOW_GOAL_X : RED_GOAL_X;
+            targetY = low ? RED_LOW_GOAL_Y : RED_GOAL_Y;
 
         } else {
 
-            targetX = BLUE_GOAL_X;
-            targetY = BLUE_GOAL_Y;
+            targetX = low ? BLUE_LOW_GOAL_X : BLUE_GOAL_X;
+            targetY = low ? BLUE_LOW_GOAL_Y : BLUE_GOAL_Y;
         }
 
         if (!Double.isFinite(targetX)
                 || !Double.isFinite(targetY)) {
+
+            /*
+             * Coordinates for this goal height are not set.
+             *
+             * Do not keep aiming at the previous goal. Drop the target so
+             * the turret centres, and keep the goal selected so the
+             * coordinates are picked up as soon as they are entered.
+             *
+             * An explicit custom target is left alone.
+             */
+            if (targetPose == null
+                    || selectedGoal != Goal.CUSTOM) {
+
+                selectedGoal = goal;
+
+                lastSelectedGoal =
+                        goal.name();
+
+                lastTargetMissing = true;
+
+                if (targetPose != null) {
+
+                    targetPose = null;
+
+                    clearAimDiagnostics();
+                }
+            }
 
             return;
         }
@@ -314,6 +362,86 @@ public class Turret {
         selectGoal(
                 Goal.BLUE
         );
+    }
+
+    // ---------------------------------------------------------------------
+    // Goal height (high / low)
+    // ---------------------------------------------------------------------
+
+    public void setGoalHeight(GoalHeight height) {
+
+        if (height == null) {
+            return;
+        }
+
+        LOW_GOAL_SELECTED =
+                height == GoalHeight.LOW;
+
+        refreshGoalTarget();
+    }
+
+    public void setHighGoal() {
+
+        setGoalHeight(
+                GoalHeight.HIGH
+        );
+    }
+
+    public void setLowGoal() {
+
+        setGoalHeight(
+                GoalHeight.LOW
+        );
+    }
+
+    public void toggleGoalHeight() {
+
+        LOW_GOAL_SELECTED =
+                !LOW_GOAL_SELECTED;
+
+        refreshGoalTarget();
+    }
+
+    public GoalHeight getGoalHeight() {
+
+        return LOW_GOAL_SELECTED
+                ? GoalHeight.LOW
+                : GoalHeight.HIGH;
+    }
+
+    private double activeAngleTrimDeg() {
+
+        double trim =
+                LOW_GOAL_SELECTED
+                        ? LOW_GOAL_ANGLE_TRIM_DEG
+                        : HIGH_GOAL_ANGLE_TRIM_DEG;
+
+        return Double.isFinite(trim)
+                ? trim
+                : 0.0;
+    }
+
+    /**
+     * Re-resolves the alliance goal for the current goal height.
+     *
+     * Called every aim loop, so coordinates and the goal height edited
+     * live in Panels take effect immediately.
+     */
+    private void refreshGoalTarget() {
+
+        lastGoalHeight =
+                getGoalHeight().name();
+
+        lastAngleTrimDeg =
+                activeAngleTrimDeg();
+
+        if (selectedGoal == Goal.RED
+                || selectedGoal == Goal.BLUE) {
+
+            selectGoal(
+                    selectedGoal
+            );
+        }
     }
 
     /**
@@ -374,6 +502,8 @@ public class Turret {
 
         lastTargetX = targetX;
         lastTargetY = targetY;
+
+        lastTargetMissing = false;
     }
 
     public Goal getSelectedGoal() {
@@ -419,170 +549,12 @@ public class Turret {
         lastHoldingBehind = false;
         lastHoldSide = 1;
 
-        lastPinpointAngleDeg = Double.NaN;
-        lastFusedAngleDeg = Double.NaN;
-
         currentAimSource = AimSource.NONE;
         lastAimSource = currentAimSource.name();
-
-        resetCameraBearingFilter();
-        clearCameraDiagnostics();
     }
 
     // ---------------------------------------------------------------------
-    // Fused aiming
-    // ---------------------------------------------------------------------
-
-    public void aimTurretFused(
-            Pose robotPose,
-            ArduCam camera,
-            ArduCam.Alliance alliance
-    ) {
-
-        aimTurretFused(
-                robotPose,
-                0.0,
-                0.0,
-                camera,
-                alliance
-        );
-    }
-
-    public void aimTurretFused(
-            Pose robotPose,
-            double velocityX,
-            double velocityY,
-            ArduCam camera,
-            ArduCam.Alliance alliance
-    ) {
-
-        clearCameraDiagnostics();
-
-        AimCalculation pinpointCalculation =
-                calculatePinpointAim(
-                        robotPose,
-                        velocityX,
-                        velocityY
-                );
-
-        if (pinpointCalculation == null) {
-
-            resetCameraBearingFilter();
-            setCentre();
-
-            return;
-        }
-
-        lastPinpointAngleDeg =
-                Math.toDegrees(
-                        pinpointCalculation.requestedAngleRad
-                );
-
-        double finalRequestedAngleRad =
-                pinpointCalculation.requestedAngleRad;
-
-        boolean fusionApplied = false;
-
-        if (CAMERA_FUSION_ENABLED
-                && camera != null
-                && alliance != null
-                && camera.isEnabled()) {
-
-            AprilTagClusterDetection detection =
-                    camera.getActiveCellDetection(
-                            alliance
-                    );
-
-            if (detection == null) {
-
-                detection =
-                        camera.getAnyHiveDetection(
-                                alliance
-                        );
-            }
-
-            if (isValidCameraDetection(detection)) {
-
-                CameraCalculation cameraCalculation =
-                        calculateCameraEstimate(
-                                detection
-                        );
-
-                /*
-                 * Weight zero means the camera is not contributing.
-                 *
-                 * Keep the source as PINPOINT so isAimReady() does not
-                 * unnecessarily require camera alignment.
-                 */
-                if (cameraCalculation != null
-                        && cameraCalculation.fusionWeight > 0.0) {
-
-                    double differenceRad =
-                            normalizeRadians(
-                                    cameraCalculation
-                                            .cameraEstimateAngleRad
-                                            - pinpointCalculation
-                                            .requestedAngleRad
-                            );
-
-                    finalRequestedAngleRad =
-                            normalizeRadians(
-                                    pinpointCalculation
-                                            .requestedAngleRad
-                                            + differenceRad
-                                            * cameraCalculation
-                                            .fusionWeight
-                            );
-
-                    fusionApplied = true;
-
-                    lastCameraEstimateAngleDeg =
-                            Math.toDegrees(
-                                    cameraCalculation
-                                            .cameraEstimateAngleRad
-                            );
-
-                    lastCameraWeight =
-                            cameraCalculation.fusionWeight;
-
-                    lastFusedAngleDeg =
-                            Math.toDegrees(
-                                    finalRequestedAngleRad
-                            );
-                }
-            }
-        }
-
-        if (!fusionApplied) {
-
-            resetCameraBearingFilter();
-
-            lastCameraTargetValid = false;
-            lastCameraAligned = false;
-            lastCameraWeight = 0.0;
-
-            lastCameraEstimateAngleDeg =
-                    Double.NaN;
-
-            lastFusedAngleDeg =
-                    lastPinpointAngleDeg;
-        }
-
-        applyAutomaticAngle(
-                finalRequestedAngleRad,
-                fusionApplied
-                        ? AimSource.FUSED
-                        : AimSource.PINPOINT
-        );
-
-        updatePinpointDiagnostics(
-                robotPose,
-                pinpointCalculation
-        );
-    }
-
-    // ---------------------------------------------------------------------
-    // Pinpoint-only aiming
+    // Pinpoint aiming
     // ---------------------------------------------------------------------
 
     public void aimTurret(Pose robotPose) {
@@ -600,11 +572,10 @@ public class Turret {
             double velocityY
     ) {
 
-        resetCameraBearingFilter();
-        clearCameraDiagnostics();
+        refreshGoalTarget();
 
         AimCalculation calculation =
-                calculatePinpointAim(
+                calculateAim(
                         robotPose,
                         velocityX,
                         velocityY
@@ -617,30 +588,21 @@ public class Turret {
             return;
         }
 
-        lastPinpointAngleDeg =
-                Math.toDegrees(
-                        calculation.requestedAngleRad
-                );
-
-        lastFusedAngleDeg =
-                lastPinpointAngleDeg;
-
         applyAutomaticAngle(
-                calculation.requestedAngleRad,
-                AimSource.PINPOINT
+                calculation.requestedAngleRad
         );
 
-        updatePinpointDiagnostics(
+        updateDiagnostics(
                 robotPose,
                 calculation
         );
     }
 
     // ---------------------------------------------------------------------
-    // Pinpoint/Pedro calculation
+    // Field-coordinate aim calculation
     // ---------------------------------------------------------------------
 
-    private AimCalculation calculatePinpointAim(
+    private AimCalculation calculateAim(
             Pose robotPose,
             double velocityX,
             double velocityY
@@ -656,29 +618,31 @@ public class Turret {
             return null;
         }
 
-        double robotHeading =
+        double heading =
                 robotPose.heading();
 
         double headingCos =
-                Math.cos(robotHeading);
+                Math.cos(heading);
 
         double headingSin =
-                Math.sin(robotHeading);
+                Math.sin(heading);
 
+        /*
+         * Turret pivot position in field coordinates.
+         */
         double pivotX =
                 robotPose.x()
-                        + TURRET_OFFSET_X_IN
-                        * headingCos
-                        - TURRET_OFFSET_Y_IN
-                        * headingSin;
+                        + TURRET_OFFSET_X_IN * headingCos
+                        - TURRET_OFFSET_Y_IN * headingSin;
 
         double pivotY =
                 robotPose.y()
-                        + TURRET_OFFSET_X_IN
-                        * headingSin
-                        + TURRET_OFFSET_Y_IN
-                        * headingCos;
+                        + TURRET_OFFSET_X_IN * headingSin
+                        + TURRET_OFFSET_Y_IN * headingCos;
 
+        /*
+         * Vector from the turret pivot to the goal.
+         */
         double targetDx =
                 targetPose.x()
                         - pivotX;
@@ -688,9 +652,9 @@ public class Turret {
                         - pivotY;
 
         double physicalDistance =
-                Math.hypot(
-                        targetDx,
-                        targetDy
+                Math.sqrt(
+                        targetDx * targetDx
+                                + targetDy * targetDy
                 );
 
         double minimumDistance =
@@ -705,6 +669,9 @@ public class Turret {
             return null;
         }
 
+        /*
+         * Optional movement compensation.
+         */
         double leadX = 0.0;
         double leadY = 0.0;
 
@@ -731,9 +698,9 @@ public class Turret {
                         + leadY;
 
         double compensatedDistance =
-                Math.hypot(
-                        aimDx,
-                        aimDy
+                Math.sqrt(
+                        aimDx * aimDx
+                                + aimDy * aimDy
                 );
 
         if (!Double.isFinite(compensatedDistance)
@@ -742,6 +709,13 @@ public class Turret {
             return null;
         }
 
+        /*
+         * Pedro heading:
+         * 0 degrees = +X
+         * 90 degrees = +Y
+         *
+         * Turret servo centre points 180 degrees behind the robot.
+         */
         double fieldTargetAngle =
                 Math.atan2(
                         aimDy,
@@ -751,9 +725,12 @@ public class Turret {
         double requestedAngle =
                 normalizeRadians(
                         fieldTargetAngle
-                                - robotHeading
+                                - heading
                                 - Math.toRadians(
                                 TURRET_ZERO_OFFSET_DEG
+                        )
+                                + Math.toRadians(
+                                activeAngleTrimDeg()
                         )
                 );
 
@@ -772,375 +749,12 @@ public class Turret {
         );
     }
 
-    private void updatePinpointDiagnostics(
-            Pose robotPose,
-            AimCalculation calculation
-    ) {
-
-        lastRobotX =
-                robotPose.x();
-
-        lastRobotY =
-                robotPose.y();
-
-        lastRobotHeadingDeg =
-                normalizeDegrees0To360(
-                        Math.toDegrees(
-                                robotPose.heading()
-                        )
-                );
-
-        lastPivotX =
-                calculation.pivotX;
-
-        lastPivotY =
-                calculation.pivotY;
-
-        lastTargetX =
-                targetPose.x();
-
-        lastTargetY =
-                targetPose.y();
-
-        if (currentAimSource != AimSource.FUSED
-                || !Double.isFinite(lastCameraRangeIn)) {
-
-            lastDistanceToTargetIn =
-                    calculation.physicalDistance;
-        }
-
-        lastFieldTargetAngleDeg =
-                normalizeDegrees0To360(
-                        Math.toDegrees(
-                                calculation.fieldTargetAngleRad
-                        )
-                );
-
-        lastVelocityLeadX =
-                calculation.leadX;
-
-        lastVelocityLeadY =
-                calculation.leadY;
-
-        lastSelectedGoal =
-                selectedGoal.name();
-    }
-
-    // ---------------------------------------------------------------------
-    // Camera calculation
-    // ---------------------------------------------------------------------
-
-    private CameraCalculation calculateCameraEstimate(
-            AprilTagClusterDetection detection
-    ) {
-
-        if (!isValidCameraDetection(detection)) {
-            return null;
-        }
-
-        double rawBearingDeg =
-                detection.ftcPose.bearing;
-
-        double rangeIn =
-                detection.ftcPose.range;
-
-        double filteredBearingDeg =
-                filterCameraBearing(
-                        rawBearingDeg
-                );
-
-        double errorDeg =
-                CAMERA_BEARING_SIGN
-                        * filteredBearingDeg
-                        + CAMERA_AIM_OFFSET_DEG;
-
-        if (!Double.isFinite(errorDeg)
-                || !Double.isFinite(CAMERA_CORRECTION_GAIN)) {
-
-            return null;
-        }
-
-        double shootTolerance =
-                safeAbsolute(
-                        CAMERA_SHOOT_TOLERANCE_DEG,
-                        2.0
-                );
-
-        lastCameraAligned =
-                Math.abs(errorDeg)
-                        <= shootTolerance;
-
-        double deadband =
-                safeAbsolute(
-                        CAMERA_DEADBAND_DEG,
-                        0.75
-                );
-
-        if (Math.abs(errorDeg) <= deadband) {
-            errorDeg = 0.0;
-        }
-
-        double correctionDeg =
-                errorDeg
-                        * CAMERA_CORRECTION_GAIN;
-
-        if (!Double.isFinite(correctionDeg)) {
-            return null;
-        }
-
-        double correctionLimit =
-                safeAbsolute(
-                        CAMERA_MAX_CORRECTION_DEG,
-                        8.0
-                );
-
-        correctionDeg =
-                clamp(
-                        correctionDeg,
-                        -correctionLimit,
-                        correctionLimit
-                );
-
-        double currentServoPosition =
-                getServoPosition();
-
-        if (!Double.isFinite(currentServoPosition)
-                || !Double.isFinite(AIM_OFFSET)) {
-
-            return null;
-        }
-
-        /*
-         * AIM_OFFSET was added after angle-to-servo conversion.
-         *
-         * Remove it before reconstructing the commanded turret angle.
-         */
-        double currentAngleRad =
-                Math.toRadians(
-                        servoPositionToAngleDeg(
-                                currentServoPosition
-                                        - AIM_OFFSET
-                        )
-                );
-
-        double cameraEstimateAngleRad =
-                normalizeRadians(
-                        currentAngleRad
-                                + Math.toRadians(
-                                correctionDeg
-                        )
-                );
-
-        double fusionWeight =
-                calculateCameraWeight(
-                        rangeIn
-                );
-
-        if (!Double.isFinite(cameraEstimateAngleRad)
-                || !Double.isFinite(fusionWeight)) {
-
-            return null;
-        }
-
-        lastCameraTargetVisible = true;
-        lastCameraTargetValid = true;
-
-        lastCameraBearingDeg =
-                rawBearingDeg;
-
-        lastFilteredCameraBearingDeg =
-                filteredBearingDeg;
-
-        lastCameraRangeIn =
-                rangeIn;
-
-        lastCameraCorrectionDeg =
-                correctionDeg;
-
-        lastDistanceToTargetIn =
-                rangeIn;
-
-        return new CameraCalculation(
-                cameraEstimateAngleRad,
-                fusionWeight
-        );
-    }
-
-    private boolean isValidCameraDetection(
-            AprilTagClusterDetection detection
-    ) {
-
-        if (detection == null) {
-            return false;
-        }
-
-        lastCameraTargetVisible = true;
-
-        if (detection.ftcPose == null) {
-            return false;
-        }
-
-        double bearing =
-                detection.ftcPose.bearing;
-
-        double range =
-                detection.ftcPose.range;
-
-        lastCameraBearingDeg =
-                bearing;
-
-        lastCameraRangeIn =
-                range;
-
-        if (!Double.isFinite(bearing)
-                || !Double.isFinite(range)) {
-
-            return false;
-        }
-
-        double minimumRange =
-                Double.isFinite(CAMERA_MIN_RANGE_IN)
-                        ? Math.max(
-                        0.0,
-                        CAMERA_MIN_RANGE_IN
-                )
-                        : 0.0;
-
-        double maximumRange =
-                Double.isFinite(CAMERA_MAX_RANGE_IN)
-                        ? Math.max(
-                        minimumRange,
-                        CAMERA_MAX_RANGE_IN
-                )
-                        : 120.0;
-
-        double maximumBearing =
-                safeAbsolute(
-                        CAMERA_MAX_ABS_BEARING_DEG,
-                        45.0
-                );
-
-        return range >= minimumRange
-                && range <= maximumRange
-                && Math.abs(bearing)
-                <= maximumBearing;
-    }
-
-    private double filterCameraBearing(
-            double bearingDeg
-    ) {
-
-        if (!cameraBearingPrimed) {
-
-            filteredCameraBearingDeg =
-                    bearingDeg;
-
-            cameraBearingPrimed = true;
-
-            return filteredCameraBearingDeg;
-        }
-
-        double alpha =
-                Double.isFinite(CAMERA_FILTER_ALPHA)
-                        ? clamp(
-                        CAMERA_FILTER_ALPHA,
-                        0.0,
-                        1.0
-                )
-                        : 0.35;
-
-        filteredCameraBearingDeg +=
-                alpha
-                        * (bearingDeg
-                        - filteredCameraBearingDeg);
-
-        return filteredCameraBearingDeg;
-    }
-
-    private double calculateCameraWeight(
-            double rangeIn
-    ) {
-
-        double configuredWeight =
-                Double.isFinite(CAMERA_FUSION_WEIGHT)
-                        ? clamp(
-                        CAMERA_FUSION_WEIGHT,
-                        0.0,
-                        1.0
-                )
-                        : 0.75;
-
-        double fullWeightRange =
-                Double.isFinite(
-                        CAMERA_FULL_WEIGHT_RANGE_IN
-                )
-                        ? Math.max(
-                        0.0,
-                        CAMERA_FULL_WEIGHT_RANGE_IN
-                )
-                        : 30.0;
-
-        double zeroWeightRange =
-                Double.isFinite(
-                        CAMERA_ZERO_WEIGHT_RANGE_IN
-                )
-                        ? Math.max(
-                        fullWeightRange + 1.0,
-                        CAMERA_ZERO_WEIGHT_RANGE_IN
-                )
-                        : 100.0;
-
-        if (rangeIn <= fullWeightRange) {
-            return configuredWeight;
-        }
-
-        if (rangeIn >= zeroWeightRange) {
-            return 0.0;
-        }
-
-        double rangeConfidence =
-                1.0
-                        - (rangeIn - fullWeightRange)
-                        / (zeroWeightRange
-                        - fullWeightRange);
-
-        return configuredWeight
-                * clamp(
-                rangeConfidence,
-                0.0,
-                1.0
-        );
-    }
-
-    private void resetCameraBearingFilter() {
-
-        filteredCameraBearingDeg = 0.0;
-        cameraBearingPrimed = false;
-    }
-
-    private void clearCameraDiagnostics() {
-
-        lastCameraTargetVisible = false;
-        lastCameraTargetValid = false;
-        lastCameraAligned = false;
-
-        lastCameraBearingDeg = Double.NaN;
-        lastFilteredCameraBearingDeg = Double.NaN;
-        lastCameraRangeIn = Double.NaN;
-
-        lastCameraCorrectionDeg = 0.0;
-        lastCameraWeight = 0.0;
-
-        lastCameraEstimateAngleDeg = Double.NaN;
-    }
-
     // ---------------------------------------------------------------------
     // Automatic command application
     // ---------------------------------------------------------------------
 
     private void applyAutomaticAngle(
-            double requestedAngleRad,
-            AimSource aimSource
+            double requestedAngleRad
     ) {
 
         if (turretServo == null
@@ -1229,10 +843,64 @@ public class Turret {
                 servoPosition;
 
         currentAimSource =
-                aimSource;
+                AimSource.PINPOINT;
 
         lastAimSource =
                 currentAimSource.name();
+    }
+
+    // ---------------------------------------------------------------------
+    // Diagnostics
+    // ---------------------------------------------------------------------
+
+    private void updateDiagnostics(
+            Pose robotPose,
+            AimCalculation calculation
+    ) {
+
+        lastRobotX =
+                robotPose.x();
+
+        lastRobotY =
+                robotPose.y();
+
+        lastRobotHeadingDeg =
+                normalizeDegrees0To360(
+                        Math.toDegrees(
+                                robotPose.heading()
+                        )
+                );
+
+        lastPivotX =
+                calculation.pivotX;
+
+        lastPivotY =
+                calculation.pivotY;
+
+        lastTargetX =
+                targetPose.x();
+
+        lastTargetY =
+                targetPose.y();
+
+        lastDistanceToTargetIn =
+                calculation.physicalDistance;
+
+        lastFieldTargetAngleDeg =
+                normalizeDegrees0To360(
+                        Math.toDegrees(
+                                calculation.fieldTargetAngleRad
+                        )
+                );
+
+        lastVelocityLeadX =
+                calculation.leadX;
+
+        lastVelocityLeadY =
+                calculation.leadY;
+
+        lastSelectedGoal =
+                selectedGoal.name();
     }
 
     // ---------------------------------------------------------------------
@@ -1251,28 +919,17 @@ public class Turret {
         );
     }
 
-    public boolean isCameraAligned() {
-
-        return currentAimSource == AimSource.FUSED
-                && lastCameraTargetValid
-                && lastCameraAligned;
-    }
-
     /**
-     * Pinpoint-only aim is ready when reachable.
-     *
-     * Fused aim additionally requires the camera bearing to be inside the
-     * shooting tolerance.
+     * Ready when the Pinpoint aim is active and the goal is inside the
+     * automatic turret limit.
      */
     public boolean isAimReady() {
 
-        if (!isTargetReachable()) {
-            return false;
-        }
+        return currentAimSource == AimSource.PINPOINT
+                && isTargetReachable();
+    }
 
-        if (currentAimSource == AimSource.FUSED) {
-            return isCameraAligned();
-        }
+    public boolean isUsingPinpointAim() {
 
         return currentAimSource == AimSource.PINPOINT;
     }
@@ -1282,18 +939,10 @@ public class Turret {
         return currentAimSource;
     }
 
-    public boolean isUsingCameraFusion() {
-
-        return currentAimSource == AimSource.FUSED;
-    }
-
-    public boolean isUsingPinpointAim() {
-
-        return currentAimSource == AimSource.PINPOINT;
-    }
-
     // ---------------------------------------------------------------------
     // Automatic limit
+    //
+    // Limited to the turret's physical half-range.
     // ---------------------------------------------------------------------
 
     private double getAutoAimMaxAngleDeg() {
@@ -1310,7 +959,7 @@ public class Turret {
                         AUTO_AIM_MAX_ANGLE_DEG
                 ),
                 0.0,
-                90.0
+                servoRangeDeg() / 2.0
         );
     }
 
@@ -1324,7 +973,7 @@ public class Turret {
     // ---------------------------------------------------------------------
     // Fixed servo commands
     //
-    // These bypass the automatic +/-75-degree limit.
+    // These bypass the automatic limit.
     // ---------------------------------------------------------------------
 
     public void setFixedServoPosition(
@@ -1371,9 +1020,6 @@ public class Turret {
 
         currentAimSource = AimSource.FIXED;
         lastAimSource = currentAimSource.name();
-
-        resetCameraBearingFilter();
-        clearCameraDiagnostics();
     }
 
     public void setCentre() {
@@ -1429,7 +1075,7 @@ public class Turret {
                 * Math.toDegrees(
                 angleRadians
         )
-                / 180.0;
+                / servoRangeDeg();
     }
 
     private double servoPositionToAngleDeg(
@@ -1444,7 +1090,15 @@ public class Turret {
         return mappingSign
                 * (servoPosition
                 - centrePosition())
-                * 180.0;
+                * servoRangeDeg();
+    }
+
+    private static double servoRangeDeg() {
+
+        return Double.isFinite(SERVO_RANGE_DEG)
+                && SERVO_RANGE_DEG > 0.0
+                ? SERVO_RANGE_DEG
+                : 180.0;
     }
 
     private double clampToServoLimits(
@@ -1574,24 +1228,6 @@ public class Turret {
         }
     }
 
-    private static class CameraCalculation {
-
-        final double cameraEstimateAngleRad;
-        final double fusionWeight;
-
-        CameraCalculation(
-                double cameraEstimateAngleRad,
-                double fusionWeight
-        ) {
-
-            this.cameraEstimateAngleRad =
-                    cameraEstimateAngleRad;
-
-            this.fusionWeight =
-                    fusionWeight;
-        }
-    }
-
     // ---------------------------------------------------------------------
     // Utilities
     // ---------------------------------------------------------------------
@@ -1628,16 +1264,6 @@ public class Turret {
         }
 
         return normalized;
-    }
-
-    private static double safeAbsolute(
-            double value,
-            double fallback
-    ) {
-
-        return Double.isFinite(value)
-                ? Math.abs(value)
-                : Math.abs(fallback);
     }
 
     private static double clamp(
